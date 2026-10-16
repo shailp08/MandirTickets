@@ -14,8 +14,13 @@ import {
 import { createSheetsTicket, trackSheetsTicket, validateSheetsFiles } from './sheets-api.js';
 
 const MACHINES = {
-  printer: '24-inch roll printer',
-  foam: 'Foam cutting machine',
+  printer: 'Poster printing',
+  foam: 'Foam cutting',
+};
+
+const LEGACY_MACHINE_NAMES = {
+  '24-inch roll printer': MACHINES.printer,
+  'Foam cutting machine': MACHINES.foam,
 };
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
@@ -24,12 +29,27 @@ const apiUrl = path => `${API_BASE_URL}${path}`;
 const staticPreview = location.hostname.endsWith('.github.io') && !API_BASE_URL && !SHEETS_API_URL;
 
 const STATUS_LABELS = {
-  queued: 'Queued',
-  'in-progress': 'In progress',
+  queued: 'Waiting',
+  'in-progress': 'Being made',
   ready: 'Ready for pickup',
-  collected: 'Collected',
+  collected: 'Picked up',
   cancelled: 'Cancelled',
 };
+
+const machineName = ticket => MACHINES[ticket?.machine]
+  || LEGACY_MACHINE_NAMES[ticket?.machineName]
+  || ticket?.machineName
+  || 'Workshop request';
+
+const focusSection = id => window.setTimeout(() => {
+  const target = document.getElementById(id);
+  if (!target) return;
+  target.focus({ preventScroll: true });
+  target.scrollIntoView({
+    behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    block: 'start',
+  });
+}, 0);
 
 const createRequestKey = () => Array.from(
   crypto.getRandomValues(new Uint8Array(16)),
@@ -52,18 +72,18 @@ function MachineChoice({ value, onChange }) {
   return (
     <section className="machine-step" aria-labelledby="ticket-question">
       <p className="eyebrow">Open a workshop ticket</p>
-      <h1 id="ticket-question">What are you opening a ticket for?</h1>
-      <p className="intro">Choose the machine that will produce the finished piece. We will only ask for the details that job needs.</p>
-      <div className="machine-choices" role="radiogroup" aria-label="Ticket type">
-        <button className={value === 'printer' ? 'machine-choice selected' : 'machine-choice'} type="button" role="radio" aria-checked={value === 'printer'} onClick={() => onChange('printer')}>
+      <h1 id="ticket-question" tabIndex="-1">What are you opening a ticket for?</h1>
+      <p className="intro">Choose what you need. We will only show the questions for that type of job.</p>
+      <div className="machine-choices" role="group" aria-label="Choose a ticket type">
+        <button className={value === 'printer' ? 'machine-choice selected' : 'machine-choice'} type="button" aria-labelledby="poster-printing-title" aria-describedby="poster-printing-description" onClick={() => onChange('printer')}>
           <span className="choice-icon"><Printer size={34} weight="duotone" aria-hidden="true" /></span>
-          <span className="choice-copy"><strong>Roll printing</strong><small>Posters, signs, adhesive graphics, and canvas up to 24 inches wide</small></span>
-          <span className="choice-select">Select <ArrowRight weight="bold" aria-hidden="true" /></span>
+          <span className="choice-copy"><strong id="poster-printing-title">Poster printing</strong><small id="poster-printing-description">Posters, signs, stickers, and canvas up to 24 inches wide</small></span>
+          <span className="choice-select" aria-hidden="true">Select <ArrowRight weight="bold" /></span>
         </button>
-        <button className={value === 'foam' ? 'machine-choice selected' : 'machine-choice'} type="button" role="radio" aria-checked={value === 'foam'} onClick={() => onChange('foam')}>
+        <button className={value === 'foam' ? 'machine-choice selected' : 'machine-choice'} type="button" aria-labelledby="foam-cutting-title" aria-describedby="foam-cutting-description" onClick={() => onChange('foam')}>
           <span className="choice-icon"><Scissors size={34} weight="duotone" aria-hidden="true" /></span>
-          <span className="choice-copy"><strong>Foam cutting</strong><small>Letters, custom forms, dimensional pieces, and display elements</small></span>
-          <span className="choice-select">Select <ArrowRight weight="bold" aria-hidden="true" /></span>
+          <span className="choice-copy"><strong id="foam-cutting-title">Foam cutting</strong><small id="foam-cutting-description">Foam letters, shapes, signs, and display pieces</small></span>
+          <span className="choice-select" aria-hidden="true">Select <ArrowRight weight="bold" /></span>
         </button>
       </div>
     </section>
@@ -172,7 +192,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
     setTicket(null);
     setNotice({ text: '', error: false });
     onChangeMachine(null);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    focusSection('ticket-question');
   };
 
   if (ticket) {
@@ -184,7 +204,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
         <p className="receipt-label">Ticket number</p>
         <strong className="receipt-number">{ticket.ticketNumber}</strong>
         {ticket.trackingCode && <><p className="receipt-label">Tracking code</p><strong className="tracking-code">{ticket.trackingCode}</strong></>}
-        <p>{MACHINES[ticket.machine] || ticket.machineName} · {ticket.department}{ticket.position ? ` · Position ${ticket.position}` : ''}</p>
+        <p>{machineName(ticket)} · {ticket.department}{ticket.position ? ` · Number in line ${ticket.position}` : ''}</p>
         <p className="receipt-help">Save the ticket number{ticket.trackingCode ? ' and tracking code' : ''}. You will need them to check progress or collect the finished job.</p>
         <div className="receipt-actions">
           <button className="button button-secondary" type="button" onClick={() => window.print()}><Printer aria-hidden="true" /> Print receipt</button>
@@ -198,13 +218,13 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
   return (
     <section className="form-section" aria-labelledby="form-title">
       <div className="form-heading">
-        <button className="change-machine" type="button" onClick={() => onChangeMachine(null)}><ArrowLeft aria-hidden="true" /> Change ticket type</button>
+        <button className="change-machine" type="button" onClick={() => { onChangeMachine(null); focusSection('ticket-question'); }}><ArrowLeft aria-hidden="true" /> Change request type</button>
         <span className="selected-machine">{machine === 'printer' ? <Printer aria-hidden="true" /> : <Scissors aria-hidden="true" />}{MACHINES[machine]}</span>
-        <h2 id="form-title">Tell us about the job.</h2>
-        <p>Required fields are marked. Submit one ticket for each distinct finished piece.</p>
+        <h2 id="form-title" tabIndex="-1">Tell us about the job.</h2>
+        <p>Required fields are marked. Send one ticket for each item or design.</p>
       </div>
 
-      <form ref={formRef} onSubmit={submit}>
+      <form ref={formRef} onSubmit={submit} aria-busy={submitting}>
         <input type="hidden" name="machine" value={machine} />
 
         <fieldset className="form-card">
@@ -219,10 +239,10 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
         </fieldset>
 
         <fieldset className="form-card">
-          <legend>Production details</legend>
+          <legend>Job details</legend>
           <div className="field-grid details-grid">
             {machine === 'printer' ? (
-              <label>Paper type <span>Required</span><select name="paperType" defaultValue="Standard"><option>Polypropylene</option><option>Adhesive</option><option>Canvas</option><option>Glossy</option><option>Standard</option></select></label>
+              <label>Print material <span>Required</span><select name="paperType" defaultValue="Standard"><option value="Polypropylene">Durable poster material</option><option value="Adhesive">Sticker material</option><option value="Canvas">Canvas</option><option value="Glossy">Glossy photo paper</option><option value="Standard">Standard poster paper</option></select></label>
             ) : (
               <label>Foam thickness <span>Inches</span><input name="thickness" type="number" min="0.01" max="1000" step="any" placeholder="2" required /></label>
             )}
@@ -232,12 +252,12 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
           </div>
           <p className="field-help">{machine === 'printer' ? 'The maximum finished print width is 24 inches.' : 'Enter the finished dimensions and add a cut layout or clear reference when available.'}</p>
 
-          <label className="upload-label">Design files <span>{machine === 'printer' ? 'Required' : 'Optional'}</span></label>
+          <label className="upload-label">Artwork files <span>{machine === 'printer' ? 'Required' : 'Optional'}</span></label>
           <div className="dropzone" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
             <UploadSimple size={30} weight="duotone" aria-hidden="true" />
             <strong>Choose files or drop them here</strong>
-            <small>PDF, static SVG, ASCII DXF, PNG, JPG, or TIFF{SHEETS_API_URL ? ' · 5 files · 5 MB each' : ''}</small>
-            <input type="file" name="files" accept=".pdf,.svg,.dxf,.png,.jpg,.jpeg,.tif,.tiff" multiple onChange={event => { addFiles(event.target.files); event.target.value = ''; }} aria-label="Upload design files" />
+            <small>PDF, SVG, DXF, PNG, JPG, or TIFF{SHEETS_API_URL ? ' · 5 files · 5 MB each' : ''}</small>
+            <input type="file" name="files" accept=".pdf,.svg,.dxf,.png,.jpg,.jpeg,.tif,.tiff" multiple onChange={event => { addFiles(event.target.files); event.target.value = ''; }} aria-label="Upload artwork files" />
           </div>
 
           {files.length > 0 && (
@@ -249,17 +269,17 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
           )}
 
           <details className="instructions">
-            <summary>Add finishing instructions <span>Optional</span></summary>
-            <label>Instructions<textarea name="notes" rows="3" maxLength="4000" placeholder="Finishing, placement, color, or anything else the workshop should know." /></label>
+            <summary>Add more details <span>Optional</span></summary>
+            <label>Details<textarea name="notes" rows="3" maxLength="4000" placeholder="Finishing, placement, color, or anything else the workshop should know." /></label>
           </details>
         </fieldset>
 
         <div className="submit-area">
-          <p>Your ticket is saved before its queue number is issued. Requested timing depends on staff and material availability.</p>
+          <p>Your ticket is saved before you receive a ticket number. Timing depends on staff and material availability.</p>
           <button className="button button-primary submit-button" type="submit" disabled={submitting}>{submitting ? 'Submitting ticket' : 'Submit ticket'} <ArrowRight weight="bold" aria-hidden="true" /></button>
         </div>
-        {submitting && <progress max="100" value={progress} aria-label="Upload progress" />}
-        {notice.text && <p className={notice.error ? 'notice error' : 'notice'} role="status">{notice.text}</p>}
+        {submitting && <progress max="100" value={progress} aria-label={`Upload progress: ${progress}%`} />}
+        {notice.text && <p className={notice.error ? 'notice error' : 'notice'} role={notice.error ? 'alert' : 'status'}>{notice.text}</p>}
       </form>
     </section>
   );
@@ -308,18 +328,18 @@ function TicketTracker({ recentTicket }) {
     <section className="tracker-section" id="tracker" aria-labelledby="tracker-title">
       <div className="tracker-heading">
         <span className="tracker-icon"><ClockCounterClockwise size={28} weight="duotone" aria-hidden="true" /></span>
-        <div><p className="eyebrow">Ticket tracker</p><h2 id="tracker-title">Check your request.</h2><p>Enter the details printed on the ticket receipt to see its current workshop status.</p></div>
+        <div><p className="eyebrow">Ticket tracker</p><h2 id="tracker-title">Check your request.</h2><p>Enter the ticket number and tracking code from your receipt.</p></div>
       </div>
-      <form className={SHEETS_API_URL ? 'tracker-form' : 'tracker-form tracker-form-compact'} onSubmit={track}>
+      <form className={SHEETS_API_URL ? 'tracker-form' : 'tracker-form tracker-form-compact'} onSubmit={track} aria-busy={loading}>
         <label>Ticket number <span>Required</span><input value={ticketNumber} onChange={event => setTicketNumber(event.target.value.toUpperCase())} required maxLength="12" placeholder="P-0001" autoComplete="off" /></label>
         {SHEETS_API_URL && <label>Tracking code <span>Required</span><input value={trackingCode} onChange={event => setTrackingCode(event.target.value.toUpperCase())} required minLength="8" maxLength="8" placeholder="ABCD2345" autoComplete="off" /></label>}
         <button className="button button-primary" type="submit" disabled={loading}>{loading ? 'Checking' : 'Track ticket'} <MagnifyingGlass aria-hidden="true" /></button>
       </form>
       {notice && <p className="notice error" role="alert">{notice}</p>}
       {result && (
-        <div className="tracker-result" aria-live="polite">
+        <div className="tracker-result" role="status" aria-live="polite">
           <span className={`status-dot status-${result.status}`} aria-hidden="true" />
-          <div><small>{result.ticketNumber}</small><strong>{STATUS_LABELS[result.status] || result.status}</strong><p>{result.machineName || MACHINES[result.machine]}{result.position ? ` · Queue position ${result.position}` : ''}</p></div>
+          <div><small>{result.ticketNumber}</small><strong>{STATUS_LABELS[result.status] || result.status}</strong><p>{machineName(result)}{result.position ? ` · Number in line ${result.position}` : ''}</p></div>
         </div>
       )}
     </section>
@@ -332,7 +352,7 @@ function App() {
 
   const chooseMachine = value => {
     setMachine(value);
-    if (value) window.setTimeout(() => document.getElementById('ticket-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
+    if (value) focusSection('form-title');
   };
 
   return (
@@ -340,12 +360,12 @@ function App() {
       <a className="skip-link" href="#main">Skip to ticket request</a>
       <Header />
       {staticPreview && <div className="deployment-banner" role="status"><strong>Ticket service not connected</strong><span>Use the local workshop address to submit a live request.</span></div>}
-      <main id="main">
+      <main id="main" tabIndex="-1">
         <MachineChoice value={machine} onChange={chooseMachine} />
         {machine && <div id="ticket-form"><TicketForm machine={machine} onChangeMachine={chooseMachine} onTicket={setRecentTicket} /></div>}
         <TicketTracker recentTicket={recentTicket} />
       </main>
-      <footer><strong>Mandir Workshop Tickets</strong><span>Request printing or foam cutting in one place.</span></footer>
+      <footer><strong>Mandir Workshop Tickets</strong><span>Poster printing and foam cutting requests in one place.</span></footer>
     </div>
   );
 }

@@ -20,7 +20,7 @@
   --saffron-soft: #f9e3b4;
   --sage: #dce4d7;
   --line: rgba(23, 37, 28, 0.16);
-  --muted: #657068;
+  --muted: #566159;
   --danger: #a82d25;
   --radius-lg: 30px;
   --radius-md: 18px;
@@ -65,6 +65,12 @@ button,
 select,
 summary {
   cursor: pointer;
+}
+
+button,
+summary,
+.header-note {
+  min-height: 44px;
 }
 
 button:disabled {
@@ -166,7 +172,7 @@ p {
 
 .brand small {
   color: rgba(255, 255, 255, 0.65);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -445,7 +451,7 @@ label > span,
 .upload-label span,
 .instructions summary span {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 720;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -459,7 +465,7 @@ textarea {
   border-radius: 11px;
   background: white;
   color: var(--ink);
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 500;
   transition: border-color 140ms ease, box-shadow 140ms ease;
 }
@@ -589,12 +595,12 @@ textarea:focus {
 
 .file-list small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .file-list button {
-  width: 32px;
-  height: 32px;
+  width: 44px;
+  height: 44px;
   display: grid;
   place-items: center;
   border: 0;
@@ -812,7 +818,7 @@ progress {
 .tracker-heading p:last-child {
   max-width: 580px;
   margin-bottom: 0;
-  color: rgba(255, 255, 255, 0.66);
+  color: rgba(255, 255, 255, 0.78);
   line-height: 1.5;
 }
 
@@ -891,7 +897,7 @@ progress {
 
 .tracker-result small {
   color: rgba(255, 255, 255, 0.56);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 740;
   letter-spacing: 0.09em;
 }
@@ -902,7 +908,7 @@ progress {
 
 .tracker-result p {
   margin: 0;
-  color: rgba(255, 255, 255, 0.66);
+  color: rgba(255, 255, 255, 0.78);
   font-size: 12px;
 }
 
@@ -952,7 +958,7 @@ footer strong {
   }
 
   .machine-choice {
-    min-height: 225px;
+    min-height: 205px;
     padding: 23px;
   }
 
@@ -987,6 +993,10 @@ footer strong {
     width: 100%;
   }
 
+  .receipt-actions .button {
+    width: 100%;
+  }
+
   .deployment-banner {
     right: 12px;
     bottom: 12px;
@@ -998,6 +1008,55 @@ footer strong {
     width: calc(100% - 28px);
     flex-direction: column;
     gap: 5px;
+  }
+}
+
+@media (max-width: 420px) {
+  .site-header {
+    width: calc(100% - 16px);
+    min-height: 62px;
+    padding: 8px 12px 8px 8px;
+  }
+
+  .brand-mark {
+    width: 42px;
+    height: 42px;
+  }
+
+  main {
+    width: calc(100% - 20px);
+    padding-top: 118px;
+  }
+
+  h1 {
+    font-size: clamp(40px, 13vw, 54px);
+  }
+
+  .machine-choice {
+    min-height: 190px;
+    padding: 20px;
+    border-radius: 22px;
+  }
+
+  .choice-icon {
+    margin-bottom: 22px;
+  }
+
+  .form-card,
+  .tracker-section {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .tracker-section,
+  .receipt-card {
+    border-radius: 22px;
+  }
+
+  .tracking-code {
+    max-width: 100%;
+    font-size: 19px;
+    letter-spacing: 0.08em;
   }
 }
 

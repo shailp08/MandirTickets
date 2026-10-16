@@ -5,11 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createStore, validateTicket, publicQueue } from '../lib/store.js';
+import { createStore, validateTicket, publicQueue, machines } from '../lib/store.js';
 import { createSheetsSync, csv } from '../lib/sheets.js';
 
 const input = { machine:'foam', customerName:'Test Person', department:'Events', purpose:'Stage lettering', phone:'', quantity:'2', width:'20', length:'36', thickness:'2', neededBy:'Tomorrow' };
 async function temp(t) { const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mandir-test-')); t.after(()=>fs.rm(dir,{recursive:true,force:true})); return dir; }
+
+test('uses plain-language public machine names', () => {
+  assert.deepEqual(machines, { printer:'Poster printing', foam:'Foam cutting' });
+});
 
 test('concurrent requests keep every ticket and assign independent, persistent queue numbers', async t => {
   const dir=await temp(t), store=await createStore(dir);

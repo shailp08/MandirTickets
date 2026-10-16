@@ -1,6 +1,6 @@
 # Mandir Workshop Tickets
 
-A focused request system for a 24-inch roll printer and foam cutting machine. The public site opens with one question—what the requester needs—and then shows only the fields required for that job.
+A focused request system for poster printing and foam cutting. The public site opens with one question—what the requester needs—and then shows only the fields required for that job.
 
 ## What works
 

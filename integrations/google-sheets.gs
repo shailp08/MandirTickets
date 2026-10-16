@@ -10,7 +10,7 @@ var HEADERS = [
   'Tracking code', 'Request key', 'Source'
 ];
 var STATUSES = ['queued', 'in-progress', 'ready', 'collected', 'cancelled'];
-var MACHINES = { printer: '24-inch roll printer', foam: 'Foam cutting machine' };
+var MACHINES = { printer: 'Poster printing', foam: 'Foam cutting' };
 var PAPER_TYPES = ['Polypropylene', 'Adhesive', 'Canvas', 'Glossy', 'Standard'];
 var DEADLINES = ['Today', 'Tomorrow', 'This week', 'No rush'];
 var MAX_FILES = 5;
