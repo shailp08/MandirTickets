@@ -1,20 +1,20 @@
-# Mandir Workshop Desk
+# Mandir Workshop Tickets
 
-A production ticket system for a 24-inch roll printer and foam cutting machine. Requesters submit job details and files, receive a permanent queue number, and track the job through pickup. Staff review private details, download files, filter the queue, and move work through its status lifecycle.
+A focused request system for a 24-inch roll printer and foam cutting machine. The public site opens with one question—what the requester needs—and then shows only the fields required for that job.
 
 ## What works
 
+- One request-only public interface with no marketing, queue, tracking, or staff pages
 - Separate print and foam-cutting request requirements
 - Streaming uploads with type, structure, signature, count, and size validation
 - Persistent `P-0001` and `F-0001` queue sequences
 - Idempotent submissions that cannot silently create duplicate tickets
-- Public queue and private ticket lookup without customer details
-- Password-protected staff desk with stale-write protection
+- Password-protected staff API with stale-write protection
 - Queued → In progress → Ready for pickup → Collected workflow
 - Cancellation, reopening, and complete status history
 - CSV export and optional authenticated Google Sheets replication
 - Atomic local persistence and a single-writer process lock
-- Responsive React interface with reduced-motion support
+- Responsive and keyboard-accessible React request form with reduced-motion support
 
 ## Run locally
 
@@ -42,7 +42,7 @@ npm audit --omit=dev
 
 ## GitHub Pages and the API
 
-GitHub Pages is a static host. It can publish this React interface, but it cannot run Express, protect the staff password, scan uploads, maintain a shared queue, or persist ticket files.
+GitHub Pages is a static host. It can publish the request interface, but it cannot run Express, scan uploads, maintain a shared queue, or persist ticket files.
 
 The included Pages workflow therefore deploys the frontend and accepts an optional repository variable named `VITE_API_BASE_URL`. For a working shared installation:
 
