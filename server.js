@@ -51,7 +51,7 @@ app.use((req, res, next) => {
     });
   }
   res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'same-origin',
-    'Content-Security-Policy': "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data: https://picsum.photos https://fastly.picsum.photos; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" });
+    'Content-Security-Policy': "default-src 'self'; style-src 'self'; script-src 'self' https://script.google.com https://script.googleusercontent.com; img-src 'self' data:; connect-src 'self' https://script.google.com https://script.googleusercontent.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" });
   if (req.path.startsWith('/api')) res.set('Cache-Control', 'no-store');
   if (req.method === 'OPTIONS') return allowedOrigin ? res.sendStatus(204) : res.sendStatus(403);
   // Browsers may only mutate data from this server or the configured frontend origin.

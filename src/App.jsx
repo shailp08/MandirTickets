@@ -3,12 +3,15 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
+  ClockCounterClockwise,
   FileArrowUp,
+  MagnifyingGlass,
   Printer,
   Scissors,
   UploadSimple,
   X,
 } from '@phosphor-icons/react';
+import { createSheetsTicket, trackSheetsTicket, validateSheetsFiles } from './sheets-api.js';
 
 const MACHINES = {
   printer: '24-inch roll printer',
@@ -16,8 +19,17 @@ const MACHINES = {
 };
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const SHEETS_API_URL = (import.meta.env.VITE_GOOGLE_SCRIPT_URL || '').replace(/\/$/, '');
 const apiUrl = path => `${API_BASE_URL}${path}`;
-const staticPreview = location.hostname.endsWith('.github.io') && !API_BASE_URL;
+const staticPreview = location.hostname.endsWith('.github.io') && !API_BASE_URL && !SHEETS_API_URL;
+
+const STATUS_LABELS = {
+  queued: 'Queued',
+  'in-progress': 'In progress',
+  ready: 'Ready for pickup',
+  collected: 'Collected',
+  cancelled: 'Cancelled',
+};
 
 const createRequestKey = () => Array.from(
   crypto.getRandomValues(new Uint8Array(16)),
@@ -31,7 +43,7 @@ function Header() {
         <span className="brand-mark" aria-hidden="true">M</span>
         <span><strong>Mandir</strong><small>Workshop tickets</small></span>
       </a>
-      <span className="header-note">Print and foam production</span>
+      <a className="header-note" href="#tracker"><MagnifyingGlass aria-hidden="true" /> Track a ticket</a>
     </header>
   );
 }
@@ -58,9 +70,10 @@ function MachineChoice({ value, onChange }) {
   );
 }
 
-function TicketForm({ machine, onChangeMachine }) {
+function TicketForm({ machine, onChangeMachine, onTicket }) {
   const formRef = useRef(null);
   const requestKey = useRef(createRequestKey());
+  const startedAt = useRef(Date.now());
   const [files, setFiles] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -78,7 +91,16 @@ function TicketForm({ machine, onChangeMachine }) {
     return () => window.removeEventListener('beforeunload', warn);
   }, [submitting]);
 
-  const addFiles = incoming => setFiles(current => [...current, ...Array.from(incoming)]);
+  const addFiles = incoming => {
+    const nextFiles = [...files, ...Array.from(incoming)];
+    try {
+      if (SHEETS_API_URL) validateSheetsFiles(nextFiles);
+      setFiles(nextFiles);
+      setNotice({ text: '', error: false });
+    } catch (error) {
+      setNotice({ text: error.message, error: true });
+    }
+  };
 
   const upload = data => new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -112,13 +134,27 @@ function TicketForm({ machine, onChangeMachine }) {
     }
     const data = new FormData(formRef.current);
     data.delete('files');
-    files.forEach(file => data.append('files', file));
     setSubmitting(true);
     setProgress(0);
     setNotice({ text: 'Uploading files and reserving your ticket number.', error: false });
     try {
-      const response = await upload(data);
-      setTicket(response.ticket);
+      let submittedTicket;
+      if (SHEETS_API_URL) {
+        const details = Object.fromEntries(data.entries());
+        submittedTicket = await createSheetsTicket(SHEETS_API_URL, {
+          ...details,
+          requestKey: requestKey.current,
+          startedAt: startedAt.current,
+          website: '',
+        }, files, setProgress);
+        submittedTicket = { ...submittedTicket, machine, department: details.department };
+      } else {
+        files.forEach(file => data.append('files', file));
+        const response = await upload(data);
+        submittedTicket = response.ticket;
+      }
+      setTicket(submittedTicket);
+      onTicket(submittedTicket);
       setNotice({ text: '', error: false });
       window.setTimeout(() => document.getElementById('ticket-receipt')?.focus(), 0);
     } catch (error) {
@@ -131,6 +167,7 @@ function TicketForm({ machine, onChangeMachine }) {
 
   const startAnother = () => {
     requestKey.current = createRequestKey();
+    startedAt.current = Date.now();
     setFiles([]);
     setTicket(null);
     setNotice({ text: '', error: false });
@@ -146,10 +183,12 @@ function TicketForm({ machine, onChangeMachine }) {
         <h2 id="receipt-title">Your request is in the queue.</h2>
         <p className="receipt-label">Ticket number</p>
         <strong className="receipt-number">{ticket.ticketNumber}</strong>
-        <p>{MACHINES[ticket.machine]} · {ticket.department}{ticket.position ? ` · Position ${ticket.position}` : ''}</p>
-        <p className="receipt-help">Save this number and bring it with you when collecting the finished job.</p>
+        {ticket.trackingCode && <><p className="receipt-label">Tracking code</p><strong className="tracking-code">{ticket.trackingCode}</strong></>}
+        <p>{MACHINES[ticket.machine] || ticket.machineName} · {ticket.department}{ticket.position ? ` · Position ${ticket.position}` : ''}</p>
+        <p className="receipt-help">Save the ticket number{ticket.trackingCode ? ' and tracking code' : ''}. You will need them to check progress or collect the finished job.</p>
         <div className="receipt-actions">
           <button className="button button-secondary" type="button" onClick={() => window.print()}><Printer aria-hidden="true" /> Print receipt</button>
+          <a className="button button-secondary" href="#tracker"><MagnifyingGlass aria-hidden="true" /> Track ticket</a>
           <button className="button button-primary" type="button" onClick={startAnother}>Open another ticket <ArrowRight aria-hidden="true" /></button>
         </div>
       </section>
@@ -197,7 +236,7 @@ function TicketForm({ machine, onChangeMachine }) {
           <div className="dropzone" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
             <UploadSimple size={30} weight="duotone" aria-hidden="true" />
             <strong>Choose files or drop them here</strong>
-            <small>PDF, static SVG, ASCII DXF, PNG, JPG, or TIFF</small>
+            <small>PDF, static SVG, ASCII DXF, PNG, JPG, or TIFF{SHEETS_API_URL ? ' · 5 files · 5 MB each' : ''}</small>
             <input type="file" name="files" accept=".pdf,.svg,.dxf,.png,.jpg,.jpeg,.tif,.tiff" multiple onChange={event => { addFiles(event.target.files); event.target.value = ''; }} aria-label="Upload design files" />
           </div>
 
@@ -226,8 +265,70 @@ function TicketForm({ machine, onChangeMachine }) {
   );
 }
 
+function TicketTracker({ recentTicket }) {
+  const [ticketNumber, setTicketNumber] = useState('');
+  const [trackingCode, setTrackingCode] = useState('');
+  const [result, setResult] = useState(null);
+  const [notice, setNotice] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!recentTicket) return;
+    setTicketNumber(recentTicket.ticketNumber || '');
+    setTrackingCode(recentTicket.trackingCode || '');
+    setResult(recentTicket);
+  }, [recentTicket]);
+
+  const track = async event => {
+    event.preventDefault();
+    setLoading(true);
+    setNotice('');
+    setResult(null);
+    try {
+      let tracked;
+      if (SHEETS_API_URL) {
+        tracked = await trackSheetsTicket(SHEETS_API_URL, { ticket: ticketNumber, code: trackingCode });
+      } else if (!staticPreview) {
+        const response = await fetch(apiUrl(`/api/track/${encodeURIComponent(ticketNumber.trim())}`), { credentials: 'include', signal: AbortSignal.timeout(15000) });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'The ticket could not be found.');
+        tracked = data;
+      } else {
+        throw new Error('The hosted ticket backend has not been connected yet.');
+      }
+      setResult(tracked);
+    } catch (error) {
+      setNotice(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <section className="tracker-section" id="tracker" aria-labelledby="tracker-title">
+      <div className="tracker-heading">
+        <span className="tracker-icon"><ClockCounterClockwise size={28} weight="duotone" aria-hidden="true" /></span>
+        <div><p className="eyebrow">Ticket tracker</p><h2 id="tracker-title">Check your request.</h2><p>Enter the details printed on the ticket receipt to see its current workshop status.</p></div>
+      </div>
+      <form className={SHEETS_API_URL ? 'tracker-form' : 'tracker-form tracker-form-compact'} onSubmit={track}>
+        <label>Ticket number <span>Required</span><input value={ticketNumber} onChange={event => setTicketNumber(event.target.value.toUpperCase())} required maxLength="12" placeholder="P-0001" autoComplete="off" /></label>
+        {SHEETS_API_URL && <label>Tracking code <span>Required</span><input value={trackingCode} onChange={event => setTrackingCode(event.target.value.toUpperCase())} required minLength="8" maxLength="8" placeholder="ABCD2345" autoComplete="off" /></label>}
+        <button className="button button-primary" type="submit" disabled={loading}>{loading ? 'Checking' : 'Track ticket'} <MagnifyingGlass aria-hidden="true" /></button>
+      </form>
+      {notice && <p className="notice error" role="alert">{notice}</p>}
+      {result && (
+        <div className="tracker-result" aria-live="polite">
+          <span className={`status-dot status-${result.status}`} aria-hidden="true" />
+          <div><small>{result.ticketNumber}</small><strong>{STATUS_LABELS[result.status] || result.status}</strong><p>{result.machineName || MACHINES[result.machine]}{result.position ? ` · Queue position ${result.position}` : ''}</p></div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function App() {
   const [machine, setMachine] = useState(null);
+  const [recentTicket, setRecentTicket] = useState(null);
 
   const chooseMachine = value => {
     setMachine(value);
@@ -241,7 +342,8 @@ function App() {
       {staticPreview && <div className="deployment-banner" role="status"><strong>Ticket service not connected</strong><span>Use the local workshop address to submit a live request.</span></div>}
       <main id="main">
         <MachineChoice value={machine} onChange={chooseMachine} />
-        {machine && <div id="ticket-form"><TicketForm machine={machine} onChangeMachine={chooseMachine} /></div>}
+        {machine && <div id="ticket-form"><TicketForm machine={machine} onChangeMachine={chooseMachine} onTicket={setRecentTicket} /></div>}
+        <TicketTracker recentTicket={recentTicket} />
       </main>
       <footer><strong>Mandir Workshop Tickets</strong><span>Request printing or foam cutting in one place.</span></footer>
     </div>

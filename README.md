@@ -4,7 +4,9 @@ A focused request system for a 24-inch roll printer and foam cutting machine. Th
 
 ## What works
 
-- One request-only public interface with no marketing, queue, tracking, or staff pages
+- One focused public interface with no marketing, public queue, or staff pages
+- Private Google Sheets backend with private Google Drive attachments
+- Receipt-protected ticket tracking with live status and queue position
 - Separate print and foam-cutting request requirements
 - Streaming uploads with type, structure, signature, count, and size validation
 - Persistent `P-0001` and `F-0001` queue sequences
@@ -40,19 +42,13 @@ npm audit --omit=dev
 
 `npm run check` performs a production client build, runs the API/security/persistence test suite, and audits the configured ticket database without printing customer information. The data audit checks duplicate IDs and queue numbers, status and revision consistency, history timestamps, missing upload files, unsafe stored filenames, and orphaned files.
 
-## GitHub Pages and the API
+## GitHub Pages and Google Sheets
 
-GitHub Pages is a static host. It can publish the request interface, but it cannot run Express, scan uploads, maintain a shared queue, or persist ticket files.
+The recommended Pages deployment uses the included Google Apps Script backend. Tickets are written to a private Sheet, attachments are stored in a private Drive folder, and status changes made in the Sheet appear in the public tracker. Tracking requires both the queue number and the private code printed on the receipt; names, departments, contact details, purposes, notes, and files are never returned by the tracker.
 
-The included Pages workflow therefore deploys the frontend and accepts an optional repository variable named `VITE_API_BASE_URL`. For a working shared installation:
+Setup instructions are in [integrations/README.md](integrations/README.md). Once the Apps Script web app is deployed, add its `/exec` URL to the GitHub repository variable `VITE_GOOGLE_SCRIPT_URL` and re-run the Pages workflow.
 
-1. Deploy the Node server to an HTTPS host with persistent storage and ClamAV.
-2. Set the server's `APP_ORIGIN` to the exact GitHub Pages origin, such as `https://account.github.io`.
-3. Set `COOKIE_SECURE=true` and configure the remaining production variables.
-4. Add a GitHub Actions repository variable named `VITE_API_BASE_URL` containing the API origin, such as `https://tickets-api.example.org`.
-5. Re-run the Pages workflow.
-
-The server supports credentialed cross-origin requests only from `APP_ORIGIN`. Without `VITE_API_BASE_URL`, the Pages site identifies itself as a frontend preview instead of implying that requests are being saved.
+The original Node backend remains available for controlled local or separately hosted installations. Set `VITE_API_BASE_URL` instead when using it. If neither backend variable is configured, the Pages build clearly identifies itself as a non-saving preview.
 
 ## Production environment
 
@@ -80,6 +76,6 @@ The public endpoints return only queue numbers, machine names, statuses, and pos
 
 Uploaded PDF and image checks verify safe envelopes, not complete document semantics. SVG and DXF receive restrictive structural validation. Production additionally requires malware scanning. Staff must still verify material, margins, dimensions, geometry, and machine readiness.
 
-## Google Sheets
+## Managing tickets in Google Sheets
 
-The authenticated Apps Script integration updates one row per immutable ticket ID and retries failed writes. Setup instructions are in [integrations/README.md](integrations/README.md). CSV export remains available when Sheets is not connected.
+Staff use the private `Tickets` sheet as the work queue. Change the Status cell to `queued`, `in-progress`, `ready`, `collected`, or `cancelled`; the customer tracker reads that state live. The Sheet is the system of record and should not be published or shared with requesters.

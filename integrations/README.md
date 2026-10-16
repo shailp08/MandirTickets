@@ -1,18 +1,34 @@
-# Google Sheets recording
+# Google Sheets ticket backend
 
-Create a private Google Sheet for the workshop register. Do not publish the sheet or commit its ID.
+This backend makes the GitHub Pages site operational without publishing the spreadsheet. Ticket details stay in a private Google Sheet, attachments stay in a private Google Drive folder, and the tracker returns only ticket number, machine, status, queue position, and creation time.
 
-## Automatic connection
-1. Open the private register and choose Extensions → Apps Script.
-2. Paste google-sheets.gs into the editor.
-3. In Project settings → Script properties, set SPREADSHEET_ID to the ID from the sheet URL and SHARED_SECRET to the SHEETS_SHARED_SECRET value in the server environment. Never put the secret in a spreadsheet cell or client-side configuration.
-4. Deploy → New deployment → Web app. Execute as yourself; permit Anyone to reach the endpoint. The script checks the private shared secret before accessing the sheet, and does not expose any read endpoint. The spreadsheet itself stays private.
-5. Authorize the script with Google. Copy the resulting /exec deployment URL to SHEETS_WEBHOOK_URL in .env, then restart the server.
-6. Staff desk → Sync now sends pending tickets. Confirm a row appears and that changing a ticket to Ready updates that row.
+## Create and deploy the backend
 
-Records go into the Tickets tab. Every ticket has an immutable ID; retries update rather than duplicate rows. Revision checks ignore stale updates. Spreadsheet formula characters in user-supplied values are escaped. Files stay on the local server; only filenames are recorded in Sheets.
+1. Create a new private Google Sheet named **Mandir Workshop Tickets**.
+2. In that sheet, choose **Extensions → Apps Script**.
+3. Replace the editor contents with [`google-sheets.gs`](google-sheets.gs) and save it.
+4. Select `setupMandirTicketSystem` in the function menu and click **Run**. Approve access to the current spreadsheet and Google Drive. Setup creates the `Tickets` tab and a private Drive folder for attachments.
+5. Choose **Deploy → New deployment → Web app**.
+6. Set **Execute as** to yourself and **Who has access** to **Anyone**. Deploy and copy the URL ending in `/exec`.
+7. In the GitHub repository, open **Settings → Secrets and variables → Actions → Variables** and create `VITE_GOOGLE_SCRIPT_URL` with the `/exec` URL.
+8. Re-run the **Verify and deploy GitHub Pages** workflow.
 
-## Manual export
-Staff desk → Export spreadsheet downloads a CSV. In Google Sheets use File → Import → Upload, choose the CSV and insert a new sheet. Disable conversion of text to numbers/dates/formulas when importing to retain phone and dimension formatting. This remains available without a live connection.
+Never publish the spreadsheet, share the upload folder, commit the deployment URL as source code, or add a client-side secret. The web app is intentionally public so visitors can create and track tickets; private tracking codes prevent casual enumeration of ticket status.
+
+## Daily workflow
+
+- New submissions appear in the `Tickets` tab with status `queued`.
+- Change the Status cell to `in-progress`, `ready`, `collected`, or `cancelled`.
+- Customers enter the queue number and tracking code from their receipt to see the current status.
+- File links in the Files column open the private Drive copies for authorized staff.
+- The hidden Ticket ID, Tracking code, and Request key columns support integrity and idempotency. Do not delete or reuse them.
+
+The public backend accepts up to five files, 5 MB each and 10 MB total. PDF, static SVG, ASCII DXF, PNG, JPG, and TIFF are accepted. Google Apps Script is suitable for a small workshop; its quotas and a default 250-ticket daily circuit breaker limit abuse. Set a different positive `MAX_DAILY_TICKETS` script property only if needed.
+
+## Updating the backend
+
+After changing `google-sheets.gs`, update the Apps Script source, save, then choose **Deploy → Manage deployments → Edit → New version → Deploy**. Existing `/exec` URLs continue working.
+
+The script also accepts the original Node server’s authenticated 19-column sync payload when `SHARED_SECRET` is set as a script property. Most GitHub Pages installations do not need that compatibility path.
 
 Official deployment guide: https://developers.google.com/apps-script/guides/web

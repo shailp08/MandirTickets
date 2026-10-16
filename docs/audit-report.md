@@ -28,6 +28,10 @@ Old records without `files` or `history` arrays were not fully normalized. Store
 
 The obsolete pre-React frontend was still copied into the production artifact, and integration notes contained a specific private Sheet identifier. The dead client was removed and the Sheets documentation now uses installation-specific placeholders. Secret-pattern scanning reports no committed credentials.
 
+### GitHub Pages had no persistent backend
+
+The static Pages build could display the request form but could not save tickets. A bound Google Apps Script backend now writes validated tickets to a private Sheet, stores bounded attachments in a private Drive folder, issues idempotent sequential ticket numbers, and exposes a JSONP tracker protected by an eight-character receipt code. The tracker returns no customer or file details.
+
 ## Verification
 
 - Production Vite build succeeds with repository-relative assets.
@@ -40,6 +44,6 @@ The obsolete pre-React frontend was still copied into the production artifact, a
 
 ## Remaining operational requirements
 
-GitHub Pages cannot host the API or ticket data. A live shared deployment still needs an HTTPS Node host with persistent storage, current ClamAV signatures, backups, disk monitoring, and `VITE_API_BASE_URL` configured in GitHub Actions.
+The Google Sheet and Drive folder must remain private and should be covered by the Google Workspace retention and backup policy. Staff should treat uploaded files as untrusted; Apps Script performs format and static-content checks but does not provide ClamAV malware scanning. The default daily circuit breaker and Apps Script quotas suit a small controlled workshop, not a high-volume public service.
 
-The current staff model is appropriate for one controlled workshop desk but uses one shared password and in-memory sessions. Broader deployment should add individual staff identities, an external session store, audit attribution, request-abuse controls at the edge, and multiple-instance-safe database storage.
+The optional Node deployment still requires an HTTPS host, persistent storage, current ClamAV signatures, backups, disk monitoring, individual staff identities for broader use, an external session store, request-abuse controls at the edge, and multiple-instance-safe database storage.
