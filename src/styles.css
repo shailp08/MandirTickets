@@ -441,10 +441,18 @@ form {
 label {
   min-width: 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
   gap: 8px;
   color: var(--ink);
   font-size: 13px;
   font-weight: 730;
+}
+
+label > input,
+label > select,
+label > textarea {
+  grid-column: 1 / -1;
 }
 
 label > span,
