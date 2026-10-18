@@ -3,7 +3,8 @@ export const SHEETS_MAX_FILE_BYTES = 200 * 1024 * 1024;
 export const SHEETS_MAX_TOTAL_BYTES = 200 * 1024 * 1024;
 
 const DRIVE_CHUNK_BYTES = 10 * 1024 * 1024;
-const SHEETS_REQUEST_ATTEMPTS = 3;
+const SHEETS_REQUEST_ATTEMPTS = 5;
+const uploadedFilesByRequest = new Map();
 const wait = milliseconds => new Promise(resolve => window.setTimeout(resolve, milliseconds));
 
 export function validateSheetsFiles(files) {
@@ -44,7 +45,7 @@ export async function retrySheetsTransport(request, { attempts = SHEETS_REQUEST_
       return await request(attempt);
     } catch (error) {
       lastError = error;
-      if (attempt < attemptCount) await pause(350 * attempt);
+      if (attempt < attemptCount) await pause(Math.min(1000 * (2 ** (attempt - 1)), 8000));
     }
   }
   throw lastError;
@@ -54,7 +55,7 @@ export async function sheetsJsonp(url, parameters, timeout = 15000) {
   try {
     return await retrySheetsTransport(() => sheetsJsonpAttempt(url, parameters, timeout));
   } catch (cause) {
-    throw new Error('The ticket service could not be reached after three attempts. Check your connection and try again.', { cause });
+    throw new Error('Google did not respond after several attempts. Your form and files are still here, so wait a moment and choose Try again.', { cause });
   }
 }
 
@@ -106,27 +107,40 @@ async function uploadDriveFile(sessionUrl, file, onProgress) {
 
 async function uploadFiles(url, details, files, onProgress) {
   validateSheetsFiles(files);
+  const fingerprint = JSON.stringify(files.map(file => [file.name, file.size, file.type || '', file.lastModified || 0]));
+  let cached = uploadedFilesByRequest.get(details.requestKey);
+  if (!cached || cached.fingerprint !== fingerprint) {
+    cached = { fingerprint, uploaded: [] };
+    uploadedFilesByRequest.set(details.requestKey, cached);
+  }
   const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
-  let completedBytes = 0;
-  const uploaded = [];
-  for (let index = 0; index < files.length; index++) {
+  const uploaded = cached.uploaded.slice();
+  let completedBytes = uploaded.reduce((sum, file) => sum + file.size, 0);
+  if (completedBytes) onProgress?.(Math.max(1, Math.round((completedBytes / totalBytes) * 90)));
+  for (let index = uploaded.length; index < files.length; index++) {
     const file = files[index];
-    const response = await sheetsJsonp(url, {
-      action: 'beginUpload',
-      requestKey: details.requestKey,
-      startedAt: details.startedAt,
-      index,
-      name: file.name,
-      type: file.type || 'application/octet-stream',
-      size: file.size,
-      origin: location.origin,
-    });
+    let response;
+    try {
+      response = await sheetsJsonp(url, {
+        action: 'beginUpload',
+        requestKey: details.requestKey,
+        startedAt: details.startedAt,
+        index,
+        name: file.name,
+        type: file.type || 'application/octet-stream',
+        size: file.size,
+        origin: location.origin,
+      });
+    } catch (cause) {
+      throw new Error('Google did not start the file upload. Your form and file are still selected; wait a moment and choose Try again.', { cause });
+    }
     if (!response?.ok || !response.sessionUrl) throw new Error(response?.error || 'The file upload could not be started.');
     const receipt = await uploadDriveFile(response.sessionUrl, file, loaded => {
       const fraction = totalBytes ? (completedBytes + Math.min(loaded, file.size)) / totalBytes : 1;
       onProgress?.(Math.max(1, Math.round(fraction * 90)));
     });
     uploaded.push({ id: receipt.id, index, name: file.name, type: file.type || 'application/octet-stream', size: file.size });
+    cached.uploaded = uploaded.slice();
     completedBytes += file.size;
   }
   return uploaded;
@@ -148,11 +162,12 @@ export async function createSheetsTicket(url, details, files, onProgress) {
     try {
       const ticket = await trackSheetsTicket(url, { requestKey: details.requestKey });
       onProgress?.(100);
+      uploadedFilesByRequest.delete(details.requestKey);
       return ticket;
     } catch (error) {
       lastError = error;
       if (attempt < 3) await wait(500 * (attempt + 1));
     }
   }
-  throw lastError || new Error('The ticket could not be confirmed. Please try again with the same form.');
+  throw new Error('Your files were uploaded, but Google has not confirmed the ticket yet. Choose Try again to finish without uploading the files again.', { cause: lastError });
 }

@@ -41,7 +41,7 @@ test('Google Sheets client retries transient transport failures', async () => {
 
   assert.deepEqual(result, { ok: true });
   assert.equal(calls, 3);
-  assert.deepEqual(pauses, [350, 700]);
+  assert.deepEqual(pauses, [1000, 2000]);
 });
 
 test('Google Sheets client stops retrying after the final transport failure', async () => {
@@ -54,4 +54,18 @@ test('Google Sheets client stops retrying after the final transport failure', as
     /still offline/,
   );
   assert.equal(calls, 3);
+});
+
+test('Google Sheets client uses a longer default retry window', async () => {
+  let calls = 0;
+  const pauses = [];
+  await assert.rejects(
+    retrySheetsTransport(async () => {
+      calls++;
+      throw new Error('temporarily unavailable');
+    }, { pause: async milliseconds => pauses.push(milliseconds) }),
+    /temporarily unavailable/,
+  );
+  assert.equal(calls, 5);
+  assert.deepEqual(pauses, [1000, 2000, 4000, 8000]);
 });

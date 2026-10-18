@@ -98,6 +98,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
   const [submitting, setSubmitting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [notice, setNotice] = useState({ text: '', error: false });
+  const [canRetry, setCanRetry] = useState(false);
   const [ticket, setTicket] = useState(null);
 
   useEffect(() => {
@@ -117,6 +118,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
       if (SHEETS_API_URL) validateSheetsFiles(nextFiles);
       setFiles(nextFiles);
       setNotice({ text: '', error: false });
+      setCanRetry(false);
     } catch (error) {
       setNotice({ text: error.message, error: true });
     }
@@ -155,6 +157,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
     const data = new FormData(formRef.current);
     data.delete('files');
     setSubmitting(true);
+    setCanRetry(false);
     setProgress(0);
     setNotice({ text: 'Uploading files and reserving your ticket number.', error: false });
     try {
@@ -179,6 +182,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
       window.setTimeout(() => document.getElementById('ticket-receipt')?.focus(), 0);
     } catch (error) {
       setNotice({ text: error.message, error: true });
+      setCanRetry(true);
     } finally {
       setSubmitting(false);
       setProgress(0);
@@ -191,6 +195,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
     setFiles([]);
     setTicket(null);
     setNotice({ text: '', error: false });
+    setCanRetry(false);
     onChangeMachine(null);
     focusSection('ticket-question');
   };
@@ -276,7 +281,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
 
         <div className="submit-area">
           <p>Your ticket is saved before you receive a ticket number. Timing depends on staff and material availability.</p>
-          <button className="button button-primary submit-button" type="submit" disabled={submitting}>{submitting ? 'Submitting ticket' : 'Submit ticket'} <ArrowRight weight="bold" aria-hidden="true" /></button>
+          <button className="button button-primary submit-button" type="submit" disabled={submitting}>{submitting ? 'Submitting ticket' : canRetry ? 'Try again' : 'Submit ticket'} <ArrowRight weight="bold" aria-hidden="true" /></button>
         </div>
         {submitting && <progress max="100" value={progress} aria-label={`Upload progress: ${progress}%`} />}
         {notice.text && <p className={notice.error ? 'notice error' : 'notice'} role={notice.error ? 'alert' : 'status'}>{notice.text}</p>}
