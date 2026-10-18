@@ -31,6 +31,7 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('Ticket system')
     .addItem('Set up backend', 'setupMandirTicketSystem')
     .addItem('Refresh sheet formatting', 'formatTicketSheet')
+    .addItem('Audit ticket files', 'showTicketPipelineAudit')
     .addToUi();
 }
 
@@ -55,6 +56,48 @@ function authorizeLargeFileUploads() {
   });
   if (response.getResponseCode() !== 200) throw new Error('Google Drive upload authorization failed with status ' + response.getResponseCode() + '.');
   return true;
+}
+
+function auditTicketPipeline() {
+  var sheet = ensureTicketSheet_(openBook_());
+  var folderId = PropertiesService.getScriptProperties().getProperty('UPLOAD_FOLDER_ID');
+  if (!folderId) throw new Error('The upload folder is not configured. Run setup again.');
+  var rows = sheet.getLastRow() > 1 ? sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADERS.length).getDisplayValues() : [];
+  var report = { ok: true, tickets: rows.length, files: 0, verifiedBytes: 0, verifiedChecksums: 0, errors: [] };
+  rows.forEach(function(row, rowIndex) {
+    var ticketNumber = String(row[1] || 'row ' + (rowIndex + 2));
+    String(row[15] || '').split('\n').filter(String).forEach(function(entry) {
+      report.files++;
+      var match = /\/d\/([A-Za-z0-9_-]{10,200})/.exec(entry);
+      if (!match) {
+        report.errors.push(ticketNumber + ': invalid Drive link');
+        return;
+      }
+      try {
+        var metadata = getDriveFileMetadata_(match[1]);
+        if (metadata.trashed || metadata.parents.indexOf(folderId) === -1) report.errors.push(ticketNumber + ': file is outside the private upload folder');
+        if (!Number(metadata.size) || !/^[a-f0-9]{32}$/i.test(String(metadata.md5Checksum || ''))) report.errors.push(ticketNumber + ': file is empty or missing its Drive checksum');
+        else {
+          report.verifiedBytes += Number(metadata.size);
+          report.verifiedChecksums++;
+        }
+        if (String(metadata.name || '').indexOf(ticketNumber + '-') !== 0) report.errors.push(ticketNumber + ': file name does not match the ticket');
+      } catch (_error) {
+        report.errors.push(ticketNumber + ': Drive file could not be read');
+      }
+    });
+  });
+  report.ok = report.errors.length === 0;
+  console.log(JSON.stringify(report));
+  return report;
+}
+
+function showTicketPipelineAudit() {
+  var report = auditTicketPipeline();
+  var message = report.ok
+    ? 'Audit passed: ' + report.tickets + ' tickets and ' + report.files + ' files are linked correctly.'
+    : 'Audit found ' + report.errors.length + ' problem(s):\n\n' + report.errors.slice(0, 20).join('\n');
+  SpreadsheetApp.getUi().alert(message);
 }
 
 function formatTicketSheet() {
@@ -213,7 +256,9 @@ function validateFiles_(files) {
     var id = String(file && file.id || '');
     if (id) {
       if (!/^[A-Za-z0-9_-]{10,200}$/.test(id) || Number(file.index) !== index) throw new Error('An uploaded file could not be verified.');
-      return { id: id, index: index, name: name, type: type, size: size };
+      var md5Checksum = String(file && file.md5Checksum || '').toLowerCase();
+      if (!/^[a-f0-9]{32}$/.test(md5Checksum)) throw new Error('An uploaded file is missing its integrity check.');
+      return { id: id, index: index, name: name, type: type, size: size, md5Checksum: md5Checksum };
     }
     var data = String(file && file.data || '');
     legacyTotal += size;
@@ -231,11 +276,13 @@ function saveFiles_(files, ticketNumber, requestKey, properties) {
   return files.map(function(file, index) {
     var safeName = file.name.replace(/[^A-Za-z0-9._ -]/g, '_');
     if (file.id) {
+      var metadata = getDriveFileMetadata_(file.id);
+      var appProperties = metadata.appProperties || {};
+      var ownedByRequest = appProperties.mandirRequestKey === requestKey && String(appProperties.mandirIndex) === String(index);
+      var legacyPendingName = String(metadata.name || '').indexOf(pendingFilePrefix_(requestKey, index)) === 0;
+      if (metadata.trashed || metadata.parents.indexOf(folderId) === -1 || Number(metadata.size) !== file.size || (!ownedByRequest && !legacyPendingName)) throw new Error('An uploaded file could not be verified.');
+      if (String(metadata.md5Checksum || '').toLowerCase() !== file.md5Checksum) throw new Error('An uploaded file failed its integrity check.');
       var uploaded = DriveApp.getFileById(file.id);
-      var parents = uploaded.getParents();
-      var inUploadFolder = false;
-      while (parents.hasNext()) if (parents.next().getId() === folderId) inUploadFolder = true;
-      if (!inUploadFolder || uploaded.getName().indexOf(pendingFilePrefix_(requestKey, index)) !== 0 || uploaded.getSize() !== file.size) throw new Error('An uploaded file could not be verified.');
       uploaded.setName(ticketNumber + '-' + (index + 1) + '-' + safeName);
       return uploaded.getName() + ' — ' + uploaded.getUrl();
     }
@@ -247,13 +294,31 @@ function saveFiles_(files, ticketNumber, requestKey, properties) {
   });
 }
 
+function getDriveFileMetadata_(fileId) {
+  var response = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) + '?fields=id%2Cname%2Csize%2Cparents%2Ctrashed%2Cmd5Checksum%2CappProperties', {
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+  if (response.getResponseCode() !== 200) throw new Error('Google Drive could not verify an uploaded file.');
+  var metadata = JSON.parse(response.getContentText() || '{}');
+  metadata.parents = Array.isArray(metadata.parents) ? metadata.parents : [];
+  return metadata;
+}
+
 function beginUpload_(params) {
   validateRequestWindow_(params.startedAt);
   var requestKey = String(params.requestKey || '').toLowerCase();
   if (!/^[a-f0-9]{32}$/.test(requestKey)) throw new Error('Refresh the form and submit again.');
   var index = Number(params.index);
   if (!Number.isSafeInteger(index) || index < 0 || index >= MAX_FILES) throw new Error('Attach no more than ' + MAX_FILES + ' files.');
-  var metadata = validateFiles_([{ name: params.name, type: params.type, size: Number(params.size), id: 'pendingfile', index: 0 }])[0];
+  var metadata = validateFiles_([{
+    name: params.name,
+    type: params.type,
+    size: Number(params.size),
+    id: 'pendingfile',
+    index: 0,
+    md5Checksum: '00000000000000000000000000000000'
+  }])[0];
   var properties = PropertiesService.getScriptProperties();
   var origin = String(params.origin || '');
   var configuredOrigins = String(properties.getProperty('UPLOAD_ORIGINS') || '').split(',').map(function(value) { return value.trim(); }).filter(String);
@@ -268,10 +333,15 @@ function beginUpload_(params) {
     enforceDailyLimit_(properties);
     var reservation = checkUploadReservation_(properties, requestKey, index, metadata.size);
     var pendingName = pendingFilePrefix_(requestKey, index) + metadata.name.replace(/[^A-Za-z0-9._ -]/g, '_');
-    var response = UrlFetchApp.fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id%2Cname%2CmimeType%2Csize', {
+    var response = UrlFetchApp.fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id%2Cname%2CmimeType%2Csize%2Cmd5Checksum', {
       method: 'post',
       contentType: 'application/json; charset=UTF-8',
-      payload: JSON.stringify({ name: pendingName, parents: [folderId], description: 'Pending Mandir workshop ticket upload' }),
+      payload: JSON.stringify({
+        name: pendingName,
+        parents: [folderId],
+        description: 'Pending Mandir workshop ticket upload',
+        appProperties: { mandirRequestKey: requestKey, mandirIndex: String(index) }
+      }),
       headers: {
         Authorization: 'Bearer ' + ScriptApp.getOAuthToken(),
         Origin: origin,
@@ -319,6 +389,7 @@ function checkUploadReservation_(properties, requestKey, index, size) {
   if (!state.created || Date.now() - Number(state.created) > 24 * 60 * 60 * 1000) state = { created: Date.now(), files: {} };
   if (!state.files || typeof state.files !== 'object') state.files = {};
   var projectedFiles = Object.assign({}, state.files);
+  var previouslyReserved = Number(projectedFiles[index] || 0);
   projectedFiles[index] = size;
   var indexes = Object.keys(projectedFiles);
   var total = indexes.reduce(function(sum, key) { return sum + Number(projectedFiles[key] || 0); }, 0);
@@ -329,14 +400,15 @@ function checkUploadReservation_(properties, requestKey, index, size) {
   var used = daily[0] === dateKey ? Number(daily[1] || 0) : 0;
   var limit = Number(properties.getProperty('MAX_DAILY_UPLOAD_BYTES') || DEFAULT_DAILY_UPLOAD_BYTES);
   if (!Number.isSafeInteger(limit) || limit < MAX_FILE_BYTES) limit = DEFAULT_DAILY_UPLOAD_BYTES;
-  if (used + size > limit) throw new Error('The workshop has reached today’s file upload limit. Please contact the desk.');
-  return { propertyKey: propertyKey, state: state, files: projectedFiles, dateKey: dateKey, used: used };
+  var additionalBytes = Math.max(0, size - previouslyReserved);
+  if (used + additionalBytes > limit) throw new Error('The workshop has reached today’s file upload limit. Please contact the desk.');
+  return { propertyKey: propertyKey, state: state, files: projectedFiles, dateKey: dateKey, used: used, additionalBytes: additionalBytes };
 }
 
 function commitUploadReservation_(properties, reservation, index, size) {
   reservation.state.files = reservation.files;
   properties.setProperty(reservation.propertyKey, JSON.stringify(reservation.state));
-  properties.setProperty('DAILY_UPLOAD_BYTES', reservation.dateKey + ':' + (reservation.used + size));
+  properties.setProperty('DAILY_UPLOAD_BYTES', reservation.dateKey + ':' + (reservation.used + reservation.additionalBytes));
 }
 
 function inspectFile_(name, bytes) {

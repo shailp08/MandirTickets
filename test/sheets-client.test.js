@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  createSheetsTicket,
+  driveNextOffset,
   retrySheetsTransport,
+  uploadDriveFile,
   validateSheetsFiles,
   SHEETS_MAX_FILE_BYTES,
   SHEETS_MAX_FILES,
@@ -9,6 +12,100 @@ import {
 } from '../src/sheets-api.js';
 
 const file = (name, size = 1024) => ({ name, size });
+
+const requestDetails = requestKey => ({
+  requestKey,
+  startedAt: Date.now() - 2000,
+  machine: 'printer',
+  customerName: 'Pipeline Test',
+  department: 'Workshop',
+  purpose: 'Verify upload delivery',
+  phone: '',
+  notes: '',
+  quantity: '1',
+  width: '24',
+  length: '36',
+  neededBy: 'No rush',
+  paperType: 'Standard',
+  website: '',
+});
+
+async function withBrowserPipeline({ jsonp, xhr = [], onPost = () => {} }, operation) {
+  const original = {
+    document: globalThis.document,
+    fetch: globalThis.fetch,
+    location: globalThis.location,
+    window: globalThis.window,
+    XMLHttpRequest: globalThis.XMLHttpRequest,
+  };
+  const uploads = [];
+  let nextTimer = 0;
+
+  class FakeXMLHttpRequest {
+    upload = {};
+    headers = {};
+
+    open(method, url) {
+      this.method = method;
+      this.url = url;
+    }
+
+    setRequestHeader(name, value) {
+      this.headers[name] = value;
+    }
+
+    send(body) {
+      const response = xhr.shift();
+      assert.ok(response, `Unexpected upload request to ${this.url}`);
+      uploads.push({ method: this.method, url: this.url, headers: { ...this.headers }, body });
+      this.upload.onprogress?.({ loaded: body.size });
+      if (response.error) {
+        this.onerror();
+        return;
+      }
+      this.status = response.status;
+      this.responseText = response.body === undefined ? '' : JSON.stringify(response.body);
+      this.onload();
+    }
+  }
+
+  globalThis.window = {
+    setTimeout(callback, milliseconds) {
+      const timer = ++nextTimer;
+      // Transport timeouts remain inert; retry and confirmation pauses complete immediately.
+      if (milliseconds < 10000) queueMicrotask(callback);
+      return timer;
+    },
+    clearTimeout() {},
+  };
+  globalThis.location = { origin: 'https://shailp08.github.io' };
+  globalThis.document = {
+    createElement: () => ({ remove() {} }),
+    head: {
+      append(script) {
+        const url = new URL(script.src);
+        const parameters = Object.fromEntries(url.searchParams);
+        const response = jsonp(parameters);
+        queueMicrotask(() => globalThis.window[parameters.callback](response));
+      },
+    },
+  };
+  globalThis.XMLHttpRequest = FakeXMLHttpRequest;
+  globalThis.fetch = async (_url, options) => {
+    onPost(JSON.parse(options.body));
+    return {};
+  };
+
+  try {
+    return await operation({ uploads });
+  } finally {
+    globalThis.document = original.document;
+    globalThis.fetch = original.fetch;
+    globalThis.location = original.location;
+    globalThis.window = original.window;
+    globalThis.XMLHttpRequest = original.XMLHttpRequest;
+  }
+}
 
 test('Google Sheets client accepts the supported workshop file formats', () => {
   assert.doesNotThrow(() => validateSheetsFiles([
@@ -68,4 +165,179 @@ test('Google Sheets client uses a longer default retry window', async () => {
   );
   assert.equal(calls, 5);
   assert.deepEqual(pauses, [1000, 2000, 4000, 8000]);
+});
+
+test('completed Drive receipts are reused when ticket confirmation must be retried', async () => {
+  const artwork = {
+    name: 'poster.pdf',
+    size: 4096,
+    type: 'application/pdf',
+    lastModified: 1770000000000,
+    slice: (start, end) => ({ size: end - start }),
+  };
+  let beginUploads = 0;
+  let trackCalls = 0;
+  const posts = [];
+
+  await withBrowserPipeline({
+    jsonp(parameters) {
+      if (parameters.action === 'beginUpload') {
+        beginUploads++;
+        return { ok: true, sessionUrl: 'https://www.googleapis.com/upload/session-one' };
+      }
+      trackCalls++;
+      if (trackCalls <= 4) return { ok: false, error: 'The ticket is still being saved.' };
+      return { ok: true, ticket: { ticketNumber: 'P-0042', trackingCode: 'ABCD2345', status: 'queued' } };
+    },
+    xhr: [{ status: 200, body: { id: 'drive_file_12345', size: '4096', mimeType: 'application/pdf', md5Checksum: '0123456789abcdef0123456789abcdef' } }],
+    onPost: body => posts.push(body),
+  }, async ({ uploads }) => {
+    const details = requestDetails('11111111111111111111111111111111');
+    await assert.rejects(createSheetsTicket('https://script.example/exec', details, [artwork]), /without uploading the files again/i);
+    const ticket = await createSheetsTicket('https://script.example/exec', details, [artwork]);
+
+    assert.equal(ticket.ticketNumber, 'P-0042');
+    assert.equal(beginUploads, 1, 'a confirmed Drive file must not be uploaded a second time');
+    assert.equal(uploads.length, 1, 'retry should reuse the cached Drive receipt');
+    assert.equal(posts.length, 2, 'retry should resend only the idempotent ticket creation request');
+    assert.deepEqual(posts[1].files, [{
+      id: 'drive_file_12345',
+      index: 0,
+      name: 'poster.pdf',
+      type: 'application/pdf',
+      size: 4096,
+      md5Checksum: '0123456789abcdef0123456789abcdef',
+    }]);
+  });
+});
+
+test('Drive range parsing uses only confirmed resumable-upload offsets', () => {
+  assert.equal(driveNextOffset('bytes=0-10485759', 0), 10485760);
+  assert.equal(driveNextOffset('bytes=0-0', 12), 1);
+  assert.equal(driveNextOffset('bytes=5-10', 12), 12);
+  assert.equal(driveNextOffset('garbage', 12), 12);
+});
+
+test('an interrupted Drive upload resumes at the server-confirmed offset without resending bytes', async () => {
+  const mebibyte = 1024 * 1024;
+  const size = 25 * mebibyte;
+  const artwork = { name: 'large-poster.pdf', size, type: 'application/pdf' };
+  const starts = [];
+  const progress = [];
+  let queries = 0;
+  let firstPut = true;
+
+  const receipt = await uploadDriveFile('https://www.googleapis.com/upload/session-one', artwork, value => progress.push(value), {
+    async put(_url, _file, start, end) {
+      starts.push([start, end]);
+      if (firstPut) {
+        firstPut = false;
+        const error = new Error('response was lost after a partial write');
+        error.retryable = true;
+        throw error;
+      }
+      if (start === 5 * mebibyte) return { nextOffset: 15 * mebibyte };
+      return {
+        nextOffset: size,
+        receipt: {
+          id: 'drive_file_resume',
+          size: String(size),
+          md5Checksum: '1234567890abcdef1234567890abcdef',
+        },
+      };
+    },
+    async query() {
+      queries++;
+      return { nextOffset: 5 * mebibyte };
+    },
+    pause: async () => {},
+  });
+
+  assert.equal(receipt.id, 'drive_file_resume');
+  assert.equal(queries, 1);
+  assert.deepEqual(starts, [
+    [0, 10 * mebibyte],
+    [5 * mebibyte, 15 * mebibyte],
+    [15 * mebibyte, 25 * mebibyte],
+  ]);
+  assert.ok(starts.slice(1).every(([start]) => start >= 5 * mebibyte), 'confirmed bytes must never be sent again');
+  assert.deepEqual(progress, [...progress].sort((a, b) => a - b), 'progress must never move backwards during recovery');
+  assert.equal(progress.at(-1), size);
+});
+
+test('Drive recovery keeps querying after a transient status failure before sending more bytes', async () => {
+  const mebibyte = 1024 * 1024;
+  const size = 8 * mebibyte;
+  const starts = [];
+  let queries = 0;
+
+  const receipt = await uploadDriveFile(
+    'https://www.googleapis.com/upload/recovery-session',
+    { name: 'poster.pdf', size, type: 'application/pdf' },
+    () => {},
+    {
+      async put(_url, _file, start) {
+        starts.push(start);
+        if (start === 0) {
+          const error = new Error('upload response was lost');
+          error.retryable = true;
+          throw error;
+        }
+        return {
+          nextOffset: size,
+          receipt: { id: 'drive_file_recovered', md5Checksum: '1234567890abcdef1234567890abcdef' },
+        };
+      },
+      async query() {
+        queries++;
+        if (queries === 1) {
+          const error = new Error('status response was also lost');
+          error.retryable = true;
+          throw error;
+        }
+        return { nextOffset: 3 * mebibyte };
+      },
+      pause: async () => {},
+    },
+  );
+
+  assert.equal(receipt.id, 'drive_file_recovered');
+  assert.equal(queries, 2);
+  assert.deepEqual(starts, [0, 3 * mebibyte], 'an unknown upload position must be queried, not guessed or resent');
+});
+
+test('ticket creation preserves file identity metadata from selection through the POST receipt', async () => {
+  const artwork = {
+    name: 'annual-poster.PDF',
+    size: 8192,
+    type: 'application/pdf',
+    lastModified: 1770000002000,
+    slice: (start, end) => ({ size: end - start }),
+  };
+  let posted;
+
+  await withBrowserPipeline({
+    jsonp(parameters) {
+      if (parameters.action === 'beginUpload') return { ok: true, sessionUrl: 'https://www.googleapis.com/upload/metadata-session' };
+      return { ok: true, ticket: { ticketNumber: 'P-0044', trackingCode: 'CDEF4567', status: 'queued' } };
+    },
+    xhr: [{ status: 200, body: { id: 'drive_file_metadata', name: 'pending-name', size: '8192', mimeType: 'application/pdf', md5Checksum: 'abcdef0123456789abcdef0123456789' } }],
+    onPost: body => { posted = body; },
+  }, async () => {
+    await createSheetsTicket(
+      'https://script.example/exec',
+      requestDetails('33333333333333333333333333333333'),
+      [artwork],
+    );
+  });
+
+  assert.equal(posted.action, 'createTicket');
+  assert.deepEqual(posted.files, [{
+    id: 'drive_file_metadata',
+    index: 0,
+    name: artwork.name,
+    type: artwork.type,
+    size: artwork.size,
+    md5Checksum: 'abcdef0123456789abcdef0123456789',
+  }]);
 });

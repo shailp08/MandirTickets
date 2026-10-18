@@ -3,6 +3,8 @@ export const SHEETS_MAX_FILE_BYTES = 200 * 1024 * 1024;
 export const SHEETS_MAX_TOTAL_BYTES = 200 * 1024 * 1024;
 
 const DRIVE_CHUNK_BYTES = 10 * 1024 * 1024;
+const DRIVE_MAX_RECOVERY_ATTEMPTS = 5;
+const DRIVE_REQUEST_TIMEOUT = 5 * 60 * 1000;
 const SHEETS_REQUEST_ATTEMPTS = 5;
 const uploadedFilesByRequest = new Map();
 const wait = milliseconds => new Promise(resolve => window.setTimeout(resolve, milliseconds));
@@ -68,41 +70,122 @@ export async function trackSheetsTicket(url, { ticket, code, requestKey } = {}) 
   return response.ticket;
 }
 
+export function driveNextOffset(rangeHeader, fallback) {
+  const match = /^bytes=0-(\d+)$/.exec(String(rangeHeader || '').trim());
+  if (!match) return fallback;
+  const offset = Number(match[1]) + 1;
+  return Number.isSafeInteger(offset) ? offset : fallback;
+}
+
+function driveRequestError(message, retryable = false) {
+  const error = new Error(message);
+  error.retryable = retryable;
+  return error;
+}
+
 function putDriveChunk(sessionUrl, file, start, end, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('PUT', sessionUrl);
+    xhr.timeout = DRIVE_REQUEST_TIMEOUT;
     xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
     xhr.setRequestHeader('Content-Range', `bytes ${start}-${end - 1}/${file.size}`);
     xhr.upload.onprogress = event => onProgress(start + event.loaded);
-    xhr.onerror = () => reject(new Error('The file upload was interrupted. Check your connection and try again.'));
+    xhr.onerror = () => reject(driveRequestError('The file upload was interrupted.', true));
+    xhr.ontimeout = () => reject(driveRequestError('The file upload paused for too long.', true));
+    xhr.onabort = () => reject(driveRequestError('The file upload was interrupted.', true));
     xhr.onload = () => {
       if (xhr.status === 308) {
-        resolve(null);
+        resolve({ nextOffset: driveNextOffset(xhr.getResponseHeader('Range'), end) });
         return;
       }
       if (xhr.status < 200 || xhr.status >= 300) {
-        reject(new Error('Google Drive could not save the file. Please try again.'));
+        reject(driveRequestError('Google Drive could not save the file.', xhr.status === 408 || xhr.status === 429 || xhr.status >= 500));
         return;
       }
       try {
-        resolve(JSON.parse(xhr.responseText));
+        resolve({ nextOffset: file.size, receipt: JSON.parse(xhr.responseText) });
       } catch {
-        reject(new Error('Google Drive saved the file but did not return a file receipt. Please try again.'));
+        reject(driveRequestError('Google Drive saved the file but did not return a file receipt.', true));
       }
     };
     xhr.send(file.slice(start, end, file.type || 'application/octet-stream'));
   });
 }
 
-async function uploadDriveFile(sessionUrl, file, onProgress) {
-  let completed;
-  for (let start = 0; start < file.size; start += DRIVE_CHUNK_BYTES) {
-    const end = Math.min(start + DRIVE_CHUNK_BYTES, file.size);
-    completed = await putDriveChunk(sessionUrl, file, start, end, onProgress);
+function queryDriveUpload(sessionUrl, file) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', sessionUrl);
+    xhr.timeout = DRIVE_REQUEST_TIMEOUT;
+    xhr.setRequestHeader('Content-Range', `bytes */${file.size}`);
+    xhr.onerror = () => reject(driveRequestError('Google Drive upload recovery was interrupted.', true));
+    xhr.ontimeout = () => reject(driveRequestError('Google Drive upload recovery took too long.', true));
+    xhr.onabort = () => reject(driveRequestError('Google Drive upload recovery was interrupted.', true));
+    xhr.onload = () => {
+      if (xhr.status === 308) {
+        resolve({ nextOffset: driveNextOffset(xhr.getResponseHeader('Range'), 0) });
+        return;
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(driveRequestError('Google Drive could not recover the file upload.', xhr.status === 408 || xhr.status === 429 || xhr.status >= 500));
+        return;
+      }
+      try {
+        resolve({ nextOffset: file.size, receipt: JSON.parse(xhr.responseText) });
+      } catch {
+        reject(driveRequestError('Google Drive did not return the recovered file receipt.', true));
+      }
+    };
+    xhr.send();
+  });
+}
+
+export async function uploadDriveFile(sessionUrl, file, onProgress, {
+  put = putDriveChunk,
+  query = queryDriveUpload,
+  pause = wait,
+  maxRecoveryAttempts = DRIVE_MAX_RECOVERY_ATTEMPTS,
+} = {}) {
+  const reportProgress = typeof onProgress === 'function' ? onProgress : () => {};
+  let nextOffset = 0;
+  let reportedOffset = 0;
+  let recoveryAttempts = 0;
+  let needsQuery = false;
+  while (true) {
+    try {
+      const result = !needsQuery && nextOffset < file.size
+        ? await put(sessionUrl, file, nextOffset, Math.min(nextOffset + DRIVE_CHUNK_BYTES, file.size), loaded => {
+          reportedOffset = Math.max(reportedOffset, Math.min(loaded, file.size));
+          reportProgress(reportedOffset);
+        })
+        : await query(sessionUrl, file);
+      if (result?.receipt?.id) {
+        reportProgress(file.size);
+        return result.receipt;
+      }
+      const confirmedOffset = Number(result?.nextOffset);
+      if (!Number.isSafeInteger(confirmedOffset) || confirmedOffset < 0 || confirmedOffset > file.size) {
+        throw driveRequestError('Google Drive returned an invalid upload position.');
+      }
+      if (confirmedOffset > nextOffset) recoveryAttempts = 0;
+      else recoveryAttempts++;
+      nextOffset = confirmedOffset;
+      needsQuery = false;
+      reportedOffset = Math.max(reportedOffset, nextOffset);
+      reportProgress(reportedOffset);
+      if (recoveryAttempts > maxRecoveryAttempts) throw driveRequestError('Google Drive could not make progress on the file upload.');
+      if (recoveryAttempts) await pause(Math.min(1000 * (2 ** (recoveryAttempts - 1)), 8000));
+    } catch (error) {
+      if (!error?.retryable) throw error;
+      recoveryAttempts++;
+      needsQuery = true;
+      if (recoveryAttempts > maxRecoveryAttempts) {
+        throw new Error('The file upload could not recover after several attempts. Your form and file are still selected; choose Try again.');
+      }
+      await pause(Math.min(1000 * (2 ** (recoveryAttempts - 1)), 8000));
+    }
   }
-  if (!completed?.id) throw new Error('Google Drive did not finish the file upload. Please try again.');
-  return completed;
 }
 
 async function uploadFiles(url, details, files, onProgress) {
@@ -139,7 +222,15 @@ async function uploadFiles(url, details, files, onProgress) {
       const fraction = totalBytes ? (completedBytes + Math.min(loaded, file.size)) / totalBytes : 1;
       onProgress?.(Math.max(1, Math.round(fraction * 90)));
     });
-    uploaded.push({ id: receipt.id, index, name: file.name, type: file.type || 'application/octet-stream', size: file.size });
+    if (!/^[a-f0-9]{32}$/i.test(String(receipt.md5Checksum || ''))) throw new Error('Google Drive did not return a file integrity check. Please try again.');
+    uploaded.push({
+      id: receipt.id,
+      index,
+      name: file.name,
+      type: file.type || 'application/octet-stream',
+      size: file.size,
+      md5Checksum: receipt.md5Checksum.toLowerCase(),
+    });
     cached.uploaded = uploaded.slice();
     completedBytes += file.size;
   }
