@@ -17,10 +17,11 @@ Never publish the spreadsheet, share the upload folder, commit the deployment UR
 
 ## Daily workflow
 
-- New submissions appear in the `Tickets` tab with status `queued`.
-- Change the Status cell to `in-progress`, `ready`, `collected`, or `cancelled`.
-- Customers enter the queue number and tracking code from their receipt to see the current status.
-- File links in the Files column open the private Drive copies for authorized staff.
+- Open the private **Mandir Workshop Tickets** spreadsheet in Google Drive and use the `Tickets` tab as the staff queue. Do not link the private sheet from the public website.
+- New submissions appear as one row with status `queued`. The most useful staff columns are Queue number (B), Name (D), Purpose (F), Needed by (M), Status (N), and Files (P).
+- Update Status (column N) with its dropdown: `queued`, `in-progress`, `ready`, `collected`, or `cancelled`. The public tracker reflects the change the next time the customer checks.
+- To print the submitted artwork, open its private Drive link in Files (column P), then print or download it from the Drive preview.
+- To print the ticket details, select the cells in that ticket's row, choose **File → Print**, and set **Print** to **Selected cells**. Landscape orientation is usually easiest to read.
 - The hidden Ticket ID, Tracking code, and Request key columns support integrity and idempotency. Do not delete or reuse them.
 
 The public backend accepts up to five files and 200 MB total. PDF, static SVG, ASCII DXF, PNG, JPG, and TIFF are accepted. Large files use private, resumable Google Drive sessions instead of passing through the Apps Script request body. Google Apps Script is suitable for a small workshop; its quotas, a default 250-ticket daily circuit breaker, and a default 5 GiB daily upload reservation limit reduce abuse. Set different positive `MAX_DAILY_TICKETS` or `MAX_DAILY_UPLOAD_BYTES` script properties only if needed. Set `UPLOAD_ORIGINS` to a comma-separated origin allowlist if the frontend is hosted somewhere other than the included GitHub Pages site or local development addresses.

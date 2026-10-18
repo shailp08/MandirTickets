@@ -78,4 +78,4 @@ Uploaded PDF and image checks verify safe envelopes, not complete document seman
 
 ## Managing tickets in Google Sheets
 
-Staff use the private `Tickets` sheet as the work queue. Change the Status cell to `queued`, `in-progress`, `ready`, `collected`, or `cancelled`; the customer tracker reads that state live. The Sheet is the system of record and should not be published or shared with requesters.
+Staff use the private `Tickets` sheet as the work queue. Change the Status dropdown in column N to `queued`, `in-progress`, `ready`, `collected`, or `cancelled`; the customer tracker reads that state live. Open artwork from the private Drive links in column P. To print a ticket, select its row and use **File → Print → Selected cells**. The Sheet is the system of record and should not be published or shared with requesters. See [`integrations/README.md`](integrations/README.md#daily-workflow) for the complete staff workflow.

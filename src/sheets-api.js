@@ -3,6 +3,7 @@ export const SHEETS_MAX_FILE_BYTES = 200 * 1024 * 1024;
 export const SHEETS_MAX_TOTAL_BYTES = 200 * 1024 * 1024;
 
 const DRIVE_CHUNK_BYTES = 10 * 1024 * 1024;
+const SHEETS_REQUEST_ATTEMPTS = 3;
 const wait = milliseconds => new Promise(resolve => window.setTimeout(resolve, milliseconds));
 
 export function validateSheetsFiles(files) {
@@ -16,7 +17,7 @@ export function validateSheetsFiles(files) {
   if (total > SHEETS_MAX_TOTAL_BYTES) throw new Error('Attachments must total 200 MB or less.');
 }
 
-export function sheetsJsonp(url, parameters, timeout = 30000) {
+function sheetsJsonpAttempt(url, parameters, timeout) {
   return new Promise((resolve, reject) => {
     const callback = `__mandirTicket_${crypto.getRandomValues(new Uint32Array(2)).join('_')}`;
     const script = document.createElement('script');
@@ -33,6 +34,28 @@ export function sheetsJsonp(url, parameters, timeout = 30000) {
     script.src = `${url}?${query}`;
     document.head.append(script);
   });
+}
+
+export async function retrySheetsTransport(request, { attempts = SHEETS_REQUEST_ATTEMPTS, pause = wait } = {}) {
+  const attemptCount = Math.max(1, Math.floor(attempts));
+  let lastError;
+  for (let attempt = 1; attempt <= attemptCount; attempt++) {
+    try {
+      return await request(attempt);
+    } catch (error) {
+      lastError = error;
+      if (attempt < attemptCount) await pause(350 * attempt);
+    }
+  }
+  throw lastError;
+}
+
+export async function sheetsJsonp(url, parameters, timeout = 15000) {
+  try {
+    return await retrySheetsTransport(() => sheetsJsonpAttempt(url, parameters, timeout));
+  } catch (cause) {
+    throw new Error('The ticket service could not be reached after three attempts. Check your connection and try again.', { cause });
+  }
 }
 
 export async function trackSheetsTicket(url, { ticket, code, requestKey } = {}) {
