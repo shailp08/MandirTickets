@@ -23,7 +23,9 @@ Never publish the spreadsheet, share the upload folder, commit the deployment UR
 - File links in the Files column open the private Drive copies for authorized staff.
 - The hidden Ticket ID, Tracking code, and Request key columns support integrity and idempotency. Do not delete or reuse them.
 
-The public backend accepts up to five files, 5 MB each and 10 MB total. PDF, static SVG, ASCII DXF, PNG, JPG, and TIFF are accepted. Google Apps Script is suitable for a small workshop; its quotas and a default 250-ticket daily circuit breaker limit abuse. Set a different positive `MAX_DAILY_TICKETS` script property only if needed.
+The public backend accepts up to five files and 200 MB total. PDF, static SVG, ASCII DXF, PNG, JPG, and TIFF are accepted. Large files use private, resumable Google Drive sessions instead of passing through the Apps Script request body. Google Apps Script is suitable for a small workshop; its quotas, a default 250-ticket daily circuit breaker, and a default 5 GiB daily upload reservation limit reduce abuse. Set different positive `MAX_DAILY_TICKETS` or `MAX_DAILY_UPLOAD_BYTES` script properties only if needed. Set `UPLOAD_ORIGINS` to a comma-separated origin allowlist if the frontend is hosted somewhere other than the included GitHub Pages site or local development addresses.
+
+When upgrading an existing deployment from the original small-file backend, run `authorizeLargeFileUploads` once from the Apps Script editor and approve the added external-request permission before deploying the new version.
 
 ## Updating the backend
 

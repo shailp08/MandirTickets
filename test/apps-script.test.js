@@ -45,6 +45,25 @@ test('Apps Script backend requires a safe print file and rejects bot submissions
   assert.equal(ticket.files[0].name, 'art.pdf');
 });
 
+test('Apps Script backend accepts private Drive receipts up to 200 MB total', () => {
+  const ticket = context.validatePublicTicket_({
+    ...baseTicket(),
+    machine: 'printer',
+    paperType: 'Standard',
+    files: [{ id: 'drive_file_12345', index: 0, name: 'large-poster.pdf', type: 'application/pdf', size: 200 * 1024 * 1024 }],
+  });
+  assert.equal(ticket.files[0].id, 'drive_file_12345');
+  assert.throws(() => context.validatePublicTicket_({
+    ...baseTicket(),
+    machine: 'printer',
+    paperType: 'Standard',
+    files: [
+      { id: 'drive_file_12345', index: 0, name: 'one.pdf', type: 'application/pdf', size: 150 * 1024 * 1024 },
+      { id: 'drive_file_67890', index: 1, name: 'two.pdf', type: 'application/pdf', size: 51 * 1024 * 1024 },
+    ],
+  }), /200 MB/i);
+});
+
 test('Apps Script backend rejects invalid dimensions, deadlines, keys, and attachments', () => {
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), width: '0' }), /valid width/i);
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), neededBy: 'Eventually' }), /needed/i);

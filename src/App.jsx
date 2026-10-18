@@ -256,7 +256,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
           <div className="dropzone" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
             <UploadSimple size={30} weight="duotone" aria-hidden="true" />
             <strong>Choose files or drop them here</strong>
-            <small>PDF, SVG, DXF, PNG, JPG, or TIFF{SHEETS_API_URL ? ' · 5 files · 5 MB each' : ''}</small>
+            <small>PDF, SVG, DXF, PNG, JPG, or TIFF · up to 200 MB total</small>
             <input type="file" name="files" accept=".pdf,.svg,.dxf,.png,.jpg,.jpeg,.tif,.tiff" multiple onChange={event => { addFiles(event.target.files); event.target.value = ''; }} aria-label="Upload artwork files" />
           </div>
 

@@ -14,9 +14,18 @@ var MACHINES = { printer: 'Poster printing', foam: 'Foam cutting' };
 var PAPER_TYPES = ['Polypropylene', 'Adhesive', 'Canvas', 'Glossy', 'Standard'];
 var DEADLINES = ['Today', 'Tomorrow', 'This week', 'No rush'];
 var MAX_FILES = 5;
-var MAX_FILE_BYTES = 5 * 1024 * 1024;
-var MAX_TOTAL_BYTES = 10 * 1024 * 1024;
+var MAX_FILE_BYTES = 200 * 1024 * 1024;
+var MAX_TOTAL_BYTES = 200 * 1024 * 1024;
+var LEGACY_MAX_FILE_BYTES = 5 * 1024 * 1024;
+var LEGACY_MAX_TOTAL_BYTES = 10 * 1024 * 1024;
 var DEFAULT_DAILY_LIMIT = 250;
+var DEFAULT_DAILY_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024;
+var DEFAULT_UPLOAD_ORIGINS = [
+  'https://shailp08.github.io',
+  'http://127.0.0.1:4177',
+  'http://localhost:4177',
+  'http://localhost:5173'
+];
 
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('Ticket system')
@@ -34,8 +43,18 @@ function setupMandirTicketSystem() {
     properties.setProperty('UPLOAD_FOLDER_ID', DriveApp.createFolder('Mandir Workshop Ticket Files').getId());
   }
   ensureTicketSheet_(book);
+  authorizeLargeFileUploads();
   formatTicketSheet();
   SpreadsheetApp.getUi().alert('The private ticket sheet and Drive upload folder are ready. Deploy this script as a web app next.');
+}
+
+function authorizeLargeFileUploads() {
+  var response = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files?pageSize=1&fields=files%28id%29', {
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+  if (response.getResponseCode() !== 200) throw new Error('Google Drive upload authorization failed with status ' + response.getResponseCode() + '.');
+  return true;
 }
 
 function formatTicketSheet() {
@@ -74,13 +93,16 @@ function doPost(event) {
     var properties = PropertiesService.getScriptProperties();
     var sheet = ensureTicketSheet_(openBook_());
     var existing = findRow_(sheet, 21, request.requestKey);
-    if (existing) return jsonResponse_({ ok: true, duplicate: true });
+    if (existing) {
+      properties.deleteProperty(uploadReservationKey_(request.requestKey));
+      return jsonResponse_({ ok: true, duplicate: true });
+    }
     enforceDailyLimit_(properties);
 
     var ticketNumber = nextTicketNumber_(sheet, request.machine);
     var trackingCode = randomCode_(8);
     var createdAt = new Date();
-    var uploadedFiles = saveFiles_(request.files, ticketNumber, properties);
+    var uploadedFiles = saveFiles_(request.files, ticketNumber, request.requestKey, properties);
     var row = [
       Utilities.getUuid(), ticketNumber, MACHINES[request.machine], request.customerName,
       request.department, request.purpose, request.phone, request.quantity,
@@ -91,6 +113,7 @@ function doPost(event) {
     sheet.getRange(sheet.getLastRow() + 1, 1, 1, HEADERS.length).setValues([row.map(escapeCell_)]);
     SpreadsheetApp.flush();
     incrementDailyCount_(properties);
+    properties.deleteProperty(uploadReservationKey_(request.requestKey));
     return jsonResponse_({ ok: true });
   } catch (error) {
     console.error(error && error.stack ? error.stack : error);
@@ -106,6 +129,7 @@ function doGet(event) {
   try {
     var params = event.parameter || {};
     if (params.action === 'health') return javascriptResponse_(callback, { ok: true, service: 'Mandir Workshop Tickets' });
+    if (params.action === 'beginUpload') return javascriptResponse_(callback, beginUpload_(params));
     if (params.action !== 'track') return javascriptResponse_(callback, { ok: false, error: 'Unsupported action.' });
     return javascriptResponse_(callback, trackTicket_(params));
   } catch (error) {
@@ -145,11 +169,12 @@ function trackTicket_(params) {
 
 function validatePublicTicket_(input) {
   if (input.website) throw new Error('Unable to accept this request.');
-  var startedAt = Number(input.startedAt);
-  if (!Number.isFinite(startedAt) || Date.now() - startedAt < 800 || Date.now() - startedAt > 24 * 60 * 60 * 1000) throw new Error('Refresh the page and submit the request again.');
+  validateRequestWindow_(input.startedAt);
   var machine = requiredChoice_(input.machine, MACHINES, 'Choose a machine.');
+  var requestKey = String(input.requestKey || '').toLowerCase();
+  if (!/^[a-f0-9]{32}$/.test(requestKey)) throw new Error('Refresh the form and submit again.');
   var request = {
-    requestKey: String(input.requestKey || '').toLowerCase(),
+    requestKey: requestKey,
     machine: machine,
     customerName: cleanText_(input.customerName, 'Name', 100, true),
     department: cleanText_(input.department, 'Department', 100, true),
@@ -164,7 +189,6 @@ function validatePublicTicket_(input) {
     thickness: '',
     files: validateFiles_(input.files || [])
   };
-  if (!/^[a-f0-9]{32}$/.test(request.requestKey)) throw new Error('Refresh the form and submit again.');
   if (machine === 'printer') {
     request.paperType = requiredArrayChoice_(input.paperType, PAPER_TYPES, 'Choose a paper type.');
     if (!request.files.length) throw new Error('Add at least one print-ready file.');
@@ -177,33 +201,142 @@ function validatePublicTicket_(input) {
 function validateFiles_(files) {
   if (!Array.isArray(files) || files.length > MAX_FILES) throw new Error('Attach no more than ' + MAX_FILES + ' files.');
   var total = 0;
-  return files.map(function(file) {
+  var legacyTotal = 0;
+  return files.map(function(file, index) {
     var name = String(file && file.name || '');
     var type = String(file && file.type || 'application/octet-stream').slice(0, 100);
     var size = Number(file && file.size);
-    var data = String(file && file.data || '');
     if (!name || name.length > 180 || /[\\/\u0000-\u001f]/.test(name) || !/\.(pdf|svg|dxf|png|jpe?g|tiff?)$/i.test(name)) throw new Error('Use PDF, SVG, DXF, PNG, JPG, or TIFF files with safe filenames.');
-    if (!Number.isSafeInteger(size) || size < 1 || size > MAX_FILE_BYTES) throw new Error('Each file must be 5 MB or smaller.');
+    if (!Number.isSafeInteger(size) || size < 1 || size > MAX_FILE_BYTES) throw new Error('Each file must be 200 MB or smaller.');
     total += size;
-    if (total > MAX_TOTAL_BYTES) throw new Error('Attachments must total 10 MB or less.');
+    if (total > MAX_TOTAL_BYTES) throw new Error('Attachments must total 200 MB or less.');
+    var id = String(file && file.id || '');
+    if (id) {
+      if (!/^[A-Za-z0-9_-]{10,200}$/.test(id) || Number(file.index) !== index) throw new Error('An uploaded file could not be verified.');
+      return { id: id, index: index, name: name, type: type, size: size };
+    }
+    var data = String(file && file.data || '');
+    legacyTotal += size;
+    if (size > LEGACY_MAX_FILE_BYTES || legacyTotal > LEGACY_MAX_TOTAL_BYTES) throw new Error('Refresh the page before attaching large files.');
     if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data) || Math.abs(Math.floor(data.replace(/=/g, '').length * 3 / 4) - size) > 2) throw new Error('An attachment could not be verified.');
     return { name: name, type: type, size: size, data: data };
   });
 }
 
-function saveFiles_(files, ticketNumber, properties) {
+function saveFiles_(files, ticketNumber, requestKey, properties) {
   if (!files.length) return [];
   var folderId = properties.getProperty('UPLOAD_FOLDER_ID');
   if (!folderId) throw new Error('The upload folder is not configured. Run setup again.');
   var folder = DriveApp.getFolderById(folderId);
   return files.map(function(file, index) {
+    var safeName = file.name.replace(/[^A-Za-z0-9._ -]/g, '_');
+    if (file.id) {
+      var uploaded = DriveApp.getFileById(file.id);
+      var parents = uploaded.getParents();
+      var inUploadFolder = false;
+      while (parents.hasNext()) if (parents.next().getId() === folderId) inUploadFolder = true;
+      if (!inUploadFolder || uploaded.getName().indexOf(pendingFilePrefix_(requestKey, index)) !== 0 || uploaded.getSize() !== file.size) throw new Error('An uploaded file could not be verified.');
+      uploaded.setName(ticketNumber + '-' + (index + 1) + '-' + safeName);
+      return uploaded.getName() + ' — ' + uploaded.getUrl();
+    }
     var bytes = Utilities.base64Decode(file.data);
     inspectFile_(file.name, bytes);
-    var safeName = file.name.replace(/[^A-Za-z0-9._ -]/g, '_');
     var blob = Utilities.newBlob(bytes, file.type, ticketNumber + '-' + (index + 1) + '-' + safeName);
     var saved = folder.createFile(blob);
     return saved.getName() + ' — ' + saved.getUrl();
   });
+}
+
+function beginUpload_(params) {
+  validateRequestWindow_(params.startedAt);
+  var requestKey = String(params.requestKey || '').toLowerCase();
+  if (!/^[a-f0-9]{32}$/.test(requestKey)) throw new Error('Refresh the form and submit again.');
+  var index = Number(params.index);
+  if (!Number.isSafeInteger(index) || index < 0 || index >= MAX_FILES) throw new Error('Attach no more than ' + MAX_FILES + ' files.');
+  var metadata = validateFiles_([{ name: params.name, type: params.type, size: Number(params.size), id: 'pendingfile', index: 0 }])[0];
+  var properties = PropertiesService.getScriptProperties();
+  var origin = String(params.origin || '');
+  var configuredOrigins = String(properties.getProperty('UPLOAD_ORIGINS') || '').split(',').map(function(value) { return value.trim(); }).filter(String);
+  var allowedOrigins = configuredOrigins.length ? configuredOrigins : DEFAULT_UPLOAD_ORIGINS;
+  if (allowedOrigins.indexOf(origin) === -1) throw new Error('Open the ticket form from the workshop website.');
+  var folderId = properties.getProperty('UPLOAD_FOLDER_ID');
+  if (!folderId) throw new Error('The upload folder is not configured. Run setup again.');
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    enforceDailyLimit_(properties);
+    var reservation = checkUploadReservation_(properties, requestKey, index, metadata.size);
+    var pendingName = pendingFilePrefix_(requestKey, index) + metadata.name.replace(/[^A-Za-z0-9._ -]/g, '_');
+    var response = UrlFetchApp.fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id%2Cname%2CmimeType%2Csize', {
+      method: 'post',
+      contentType: 'application/json; charset=UTF-8',
+      payload: JSON.stringify({ name: pendingName, parents: [folderId], description: 'Pending Mandir workshop ticket upload' }),
+      headers: {
+        Authorization: 'Bearer ' + ScriptApp.getOAuthToken(),
+        Origin: origin,
+        'X-Upload-Content-Type': metadata.type,
+        'X-Upload-Content-Length': String(metadata.size)
+      },
+      followRedirects: false,
+      muteHttpExceptions: true
+    });
+    if (response.getResponseCode() !== 200) throw new Error('Google Drive could not start the file upload.');
+    var headers = response.getAllHeaders();
+    var sessionUrl = '';
+    Object.keys(headers).some(function(key) {
+      if (key.toLowerCase() === 'location') {
+        sessionUrl = String(headers[key]);
+        return true;
+      }
+      return false;
+    });
+    if (!/^https:\/\/www\.googleapis\.com\/upload\//.test(sessionUrl)) throw new Error('Google Drive did not return an upload session.');
+    commitUploadReservation_(properties, reservation, index, metadata.size);
+    return { ok: true, sessionUrl: sessionUrl };
+  } finally {
+    if (lock.hasLock()) lock.releaseLock();
+  }
+}
+
+function validateRequestWindow_(value) {
+  var startedAt = Number(value);
+  if (!Number.isFinite(startedAt) || Date.now() - startedAt < 800 || Date.now() - startedAt > 24 * 60 * 60 * 1000) throw new Error('Refresh the page and submit the request again.');
+}
+
+function pendingFilePrefix_(requestKey, index) {
+  return '.mandir-pending-' + requestKey + '-' + index + '-';
+}
+
+function uploadReservationKey_(requestKey) {
+  return 'UPLOAD_' + requestKey;
+}
+
+function checkUploadReservation_(properties, requestKey, index, size) {
+  var propertyKey = uploadReservationKey_(requestKey);
+  var state;
+  try { state = JSON.parse(properties.getProperty(propertyKey) || '{}'); } catch (_error) { state = {}; }
+  if (!state.created || Date.now() - Number(state.created) > 24 * 60 * 60 * 1000) state = { created: Date.now(), files: {} };
+  if (!state.files || typeof state.files !== 'object') state.files = {};
+  var projectedFiles = Object.assign({}, state.files);
+  projectedFiles[index] = size;
+  var indexes = Object.keys(projectedFiles);
+  var total = indexes.reduce(function(sum, key) { return sum + Number(projectedFiles[key] || 0); }, 0);
+  if (indexes.length > MAX_FILES || total > MAX_TOTAL_BYTES) throw new Error('Attachments must total 200 MB or less.');
+
+  var dateKey = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  var daily = String(properties.getProperty('DAILY_UPLOAD_BYTES') || '').split(':');
+  var used = daily[0] === dateKey ? Number(daily[1] || 0) : 0;
+  var limit = Number(properties.getProperty('MAX_DAILY_UPLOAD_BYTES') || DEFAULT_DAILY_UPLOAD_BYTES);
+  if (!Number.isSafeInteger(limit) || limit < MAX_FILE_BYTES) limit = DEFAULT_DAILY_UPLOAD_BYTES;
+  if (used + size > limit) throw new Error('The workshop has reached today’s file upload limit. Please contact the desk.');
+  return { propertyKey: propertyKey, state: state, files: projectedFiles, dateKey: dateKey, used: used };
+}
+
+function commitUploadReservation_(properties, reservation, index, size) {
+  reservation.state.files = reservation.files;
+  properties.setProperty(reservation.propertyKey, JSON.stringify(reservation.state));
+  properties.setProperty('DAILY_UPLOAD_BYTES', reservation.dateKey + ':' + (reservation.used + size));
 }
 
 function inspectFile_(name, bytes) {

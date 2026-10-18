@@ -61,7 +61,7 @@ Production refuses to start unless these safeguards are configured:
 - `CLAMSCAN_PATH` set to an absolute ClamAV `clamscan` executable with current signatures
 - Persistent `DATA_DIR` storage with backups and disk monitoring
 
-Optional upload controls default to ten files and 250 MiB per file:
+Optional upload controls default to ten files and 200 MiB per file:
 
 - `MAX_UPLOAD_FILES`
 - `MAX_UPLOAD_BYTES`

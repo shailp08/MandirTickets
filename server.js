@@ -23,7 +23,7 @@ function positiveInteger(value, fallback, name) {
   if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error(`${name} must be a positive integer.`);
   return parsed;
 }
-const maxUploadBytes = positiveInteger(process.env.MAX_UPLOAD_BYTES, 250 * 1024 * 1024, 'MAX_UPLOAD_BYTES');
+const maxUploadBytes = positiveInteger(process.env.MAX_UPLOAD_BYTES, 200 * 1024 * 1024, 'MAX_UPLOAD_BYTES');
 const maxUploadFiles = positiveInteger(process.env.MAX_UPLOAD_FILES, 10, 'MAX_UPLOAD_FILES');
 if (production && (!scanner || !appOrigin?.startsWith('https://') || process.env.COOKIE_SECURE !== 'true' || (process.env.ADMIN_PASSWORD || '').length < 16)) {
   throw new Error('Production requires CLAMSCAN_PATH, an HTTPS APP_ORIGIN, COOKIE_SECURE=true, and an ADMIN_PASSWORD of at least 16 characters.');

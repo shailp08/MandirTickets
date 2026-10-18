@@ -1,7 +1,8 @@
 export const SHEETS_MAX_FILES = 5;
-export const SHEETS_MAX_FILE_BYTES = 5 * 1024 * 1024;
-export const SHEETS_MAX_TOTAL_BYTES = 10 * 1024 * 1024;
+export const SHEETS_MAX_FILE_BYTES = 200 * 1024 * 1024;
+export const SHEETS_MAX_TOTAL_BYTES = 200 * 1024 * 1024;
 
+const DRIVE_CHUNK_BYTES = 10 * 1024 * 1024;
 const wait = milliseconds => new Promise(resolve => window.setTimeout(resolve, milliseconds));
 
 export function validateSheetsFiles(files) {
@@ -9,33 +10,13 @@ export function validateSheetsFiles(files) {
   let total = 0;
   for (const file of files) {
     if (!/\.(pdf|svg|dxf|png|jpe?g|tiff?)$/i.test(file.name)) throw new Error('Use PDF, SVG, DXF, PNG, JPG, or TIFF files.');
-    if (file.size < 1 || file.size > SHEETS_MAX_FILE_BYTES) throw new Error('Each file must be 5 MB or smaller.');
+    if (file.size < 1 || file.size > SHEETS_MAX_FILE_BYTES) throw new Error('Each file must be 200 MB or smaller.');
     total += file.size;
   }
-  if (total > SHEETS_MAX_TOTAL_BYTES) throw new Error('Attachments must total 10 MB or less.');
+  if (total > SHEETS_MAX_TOTAL_BYTES) throw new Error('Attachments must total 200 MB or less.');
 }
 
-function bytesToBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  for (let offset = 0; offset < bytes.length; offset += 32768) {
-    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 32768, bytes.length)));
-  }
-  return btoa(binary);
-}
-
-async function encodeFiles(files, onProgress) {
-  validateSheetsFiles(files);
-  const encoded = [];
-  for (let index = 0; index < files.length; index++) {
-    const file = files[index];
-    encoded.push({ name: file.name, type: file.type || 'application/octet-stream', size: file.size, data: bytesToBase64(await file.arrayBuffer()) });
-    onProgress?.(Math.round(((index + 1) / Math.max(files.length, 1)) * 45));
-  }
-  return encoded;
-}
-
-export function sheetsJsonp(url, parameters, timeout = 15000) {
+export function sheetsJsonp(url, parameters, timeout = 30000) {
   return new Promise((resolve, reject) => {
     const callback = `__mandirTicket_${crypto.getRandomValues(new Uint32Array(2)).join('_')}`;
     const script = document.createElement('script');
@@ -63,17 +44,82 @@ export async function trackSheetsTicket(url, { ticket, code, requestKey } = {}) 
   return response.ticket;
 }
 
+function putDriveChunk(sessionUrl, file, start, end, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', sessionUrl);
+    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    xhr.setRequestHeader('Content-Range', `bytes ${start}-${end - 1}/${file.size}`);
+    xhr.upload.onprogress = event => onProgress(start + event.loaded);
+    xhr.onerror = () => reject(new Error('The file upload was interrupted. Check your connection and try again.'));
+    xhr.onload = () => {
+      if (xhr.status === 308) {
+        resolve(null);
+        return;
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error('Google Drive could not save the file. Please try again.'));
+        return;
+      }
+      try {
+        resolve(JSON.parse(xhr.responseText));
+      } catch {
+        reject(new Error('Google Drive saved the file but did not return a file receipt. Please try again.'));
+      }
+    };
+    xhr.send(file.slice(start, end, file.type || 'application/octet-stream'));
+  });
+}
+
+async function uploadDriveFile(sessionUrl, file, onProgress) {
+  let completed;
+  for (let start = 0; start < file.size; start += DRIVE_CHUNK_BYTES) {
+    const end = Math.min(start + DRIVE_CHUNK_BYTES, file.size);
+    completed = await putDriveChunk(sessionUrl, file, start, end, onProgress);
+  }
+  if (!completed?.id) throw new Error('Google Drive did not finish the file upload. Please try again.');
+  return completed;
+}
+
+async function uploadFiles(url, details, files, onProgress) {
+  validateSheetsFiles(files);
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+  let completedBytes = 0;
+  const uploaded = [];
+  for (let index = 0; index < files.length; index++) {
+    const file = files[index];
+    const response = await sheetsJsonp(url, {
+      action: 'beginUpload',
+      requestKey: details.requestKey,
+      startedAt: details.startedAt,
+      index,
+      name: file.name,
+      type: file.type || 'application/octet-stream',
+      size: file.size,
+      origin: location.origin,
+    });
+    if (!response?.ok || !response.sessionUrl) throw new Error(response?.error || 'The file upload could not be started.');
+    const receipt = await uploadDriveFile(response.sessionUrl, file, loaded => {
+      const fraction = totalBytes ? (completedBytes + Math.min(loaded, file.size)) / totalBytes : 1;
+      onProgress?.(Math.max(1, Math.round(fraction * 90)));
+    });
+    uploaded.push({ id: receipt.id, index, name: file.name, type: file.type || 'application/octet-stream', size: file.size });
+    completedBytes += file.size;
+  }
+  return uploaded;
+}
+
 export async function createSheetsTicket(url, details, files, onProgress) {
-  const encodedFiles = await encodeFiles(files, onProgress);
-  onProgress?.(50);
+  const uploadedFiles = await uploadFiles(url, details, files, onProgress);
+  onProgress?.(92);
   await fetch(url, {
     method: 'POST',
     mode: 'no-cors',
     cache: 'no-store',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ action: 'createTicket', ...details, files: encodedFiles }),
+    body: JSON.stringify({ action: 'createTicket', ...details, files: uploadedFiles }),
   });
-  onProgress?.(80);
+  onProgress?.(95);
   let lastError;
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
