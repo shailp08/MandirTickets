@@ -14,6 +14,7 @@ A focused request system for poster printing and foam cutting. The public site o
 - Password-protected staff API with stale-write protection
 - Queued → In progress → Ready for pickup → Collected workflow
 - Cancellation, reopening, and complete status history
+- Email alerts to one or more admins for new tickets and to requesters for status changes
 - CSV export and optional authenticated Google Sheets replication
 - Atomic local persistence and a single-writer process lock
 - Responsive and keyboard-accessible React request form with reduced-motion support
@@ -66,16 +67,18 @@ Optional upload controls default to ten files and 200 MiB per file:
 - `MAX_UPLOAD_FILES`
 - `MAX_UPLOAD_BYTES`
 
+The Node backend sends notification emails through any SMTP provider. Configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `NOTIFICATION_FROM`, and (when required) `SMTP_USER` and `SMTP_PASSWORD`. Set `ADMIN_NOTIFICATION_EMAILS` to a comma-separated list of every admin who should receive new-ticket alerts. Failed messages are stored in `DATA_DIR/notifications.json` and retried automatically; notification status is also included in the authenticated `GET /api/tickets` response.
+
 Use only one server process against a data directory. `server.lock` prevents simultaneous writers. After a crash, verify that no server on any host uses that directory before removing the lock.
 
 The application should be placed behind HTTPS and trusted-network or identity controls before broad public exposure. Google Sheets is a reporting copy, not the source of truth.
 
 ## Data and privacy
 
-The public endpoints return only queue numbers, machine names, statuses, and positions. Names, departments, phone numbers, purposes, notes, and files require a staff session. Recent ticket numbers stored in the browser contain no customer details and can be cleared by the requester.
+The public endpoints return only queue numbers, machine names, statuses, and positions. Names, departments, email addresses, phone numbers, purposes, notes, and files require a staff session. Recent ticket numbers stored in the browser contain no customer details and can be cleared by the requester.
 
 Uploaded PDF and image checks verify safe envelopes, not complete document semantics. SVG and DXF receive restrictive structural validation. Production additionally requires malware scanning. Staff must still verify material, margins, dimensions, geometry, and machine readiness.
 
 ## Managing tickets in Google Sheets
 
-Staff use the private `Tickets` sheet as the work queue. Change the Status dropdown in column N to `queued`, `in-progress`, `ready`, `collected`, or `cancelled`; the customer tracker reads that state live. Open artwork from the private Drive links in column P. To print a ticket, select its row and use **File → Print → Selected cells**. The Sheet is the system of record and should not be published or shared with requesters. See [`integrations/README.md`](integrations/README.md#daily-workflow) for the complete staff workflow.
+Staff use the private `Tickets` sheet as the work queue. Change the Status dropdown in column N to `queued`, `in-progress`, `ready`, `collected`, or `cancelled`; the customer tracker reads that state live and the requester receives an email. Open artwork from the private Drive links in column P. To print a ticket, select its row and use **File → Print → Selected cells**. The Sheet is the system of record and should not be published or shared with requesters. See [`integrations/README.md`](integrations/README.md#daily-workflow) for the complete staff workflow.

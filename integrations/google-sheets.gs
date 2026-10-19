@@ -7,7 +7,7 @@ var HEADERS = [
   'Ticket ID', 'Queue number', 'Machine', 'Name', 'Department', 'Purpose', 'Phone',
   'Quantity', 'Paper', 'Width (in)', 'Length (in)', 'Thickness (in)', 'Needed by',
   'Status', 'Notes', 'Files', 'Created', 'Updated', 'Revision',
-  'Tracking code', 'Request key', 'Source'
+  'Tracking code', 'Request key', 'Source', 'Customer email'
 ];
 var STATUSES = ['queued', 'in-progress', 'ready', 'collected', 'cancelled'];
 var MACHINES = { printer: 'Poster printing', foam: 'Foam cutting' };
@@ -31,6 +31,7 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('Ticket system')
     .addItem('Set up backend', 'setupMandirTicketSystem')
     .addItem('Refresh sheet formatting', 'formatTicketSheet')
+    .addItem('Configure notification emails', 'configureNotificationEmails')
     .addItem('Audit ticket files', 'showTicketPipelineAudit')
     .addToUi();
 }
@@ -43,10 +44,38 @@ function setupMandirTicketSystem() {
   if (!properties.getProperty('UPLOAD_FOLDER_ID')) {
     properties.setProperty('UPLOAD_FOLDER_ID', DriveApp.createFolder('Mandir Workshop Ticket Files').getId());
   }
+  if (!properties.getProperty('ADMIN_NOTIFICATION_EMAILS')) {
+    var ownerEmail = String(Session.getEffectiveUser().getEmail() || '').trim().toLowerCase();
+    if (ownerEmail) properties.setProperty('ADMIN_NOTIFICATION_EMAILS', ownerEmail);
+  }
   ensureTicketSheet_(book);
+  installStatusNotificationTrigger_(book);
   authorizeLargeFileUploads();
   formatTicketSheet();
-  SpreadsheetApp.getUi().alert('The private ticket sheet and Drive upload folder are ready. Deploy this script as a web app next.');
+  SpreadsheetApp.getUi().alert('The private ticket sheet, Drive upload folder, and email notifications are ready. Use Ticket system → Configure notification emails to add more admins, then deploy this script as a web app.');
+}
+
+function configureNotificationEmails() {
+  var ui = SpreadsheetApp.getUi();
+  var properties = PropertiesService.getScriptProperties();
+  var response = ui.prompt(
+    'Admin ticket notifications',
+    'Enter every admin email that should receive new-ticket notifications, separated by commas.',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (response.getSelectedButton() !== ui.Button.OK) return false;
+  var emails = parseEmailList_(response.getResponseText());
+  if (!emails.length) throw new Error('Enter at least one admin notification email.');
+  properties.setProperty('ADMIN_NOTIFICATION_EMAILS', emails.join(','));
+  ui.alert('New-ticket notifications will be sent to ' + emails.length + ' admin' + (emails.length === 1 ? '.' : 's.'));
+  return true;
+}
+
+function installStatusNotificationTrigger_(book) {
+  var exists = ScriptApp.getProjectTriggers().some(function(trigger) {
+    return trigger.getHandlerFunction() === 'onTicketStatusEdit';
+  });
+  if (!exists) ScriptApp.newTrigger('onTicketStatusEdit').forSpreadsheet(book).onEdit().create();
 }
 
 function authorizeLargeFileUploads() {
@@ -151,12 +180,14 @@ function doPost(event) {
       request.department, request.purpose, request.phone, request.quantity,
       request.paperType, request.width, request.length, request.thickness,
       request.neededBy, 'queued', request.notes, uploadedFiles.join('\n'),
-      createdAt, createdAt, 1, trackingCode, request.requestKey, 'GitHub Pages'
+      createdAt, createdAt, 1, trackingCode, request.requestKey, 'GitHub Pages', request.email
     ];
     sheet.getRange(sheet.getLastRow() + 1, 1, 1, HEADERS.length).setValues([row.map(escapeCell_)]);
     SpreadsheetApp.flush();
     incrementDailyCount_(properties);
     properties.deleteProperty(uploadReservationKey_(request.requestKey));
+    try { notifyAdminsOfNewTicket_(request, ticketNumber, properties); }
+    catch (notificationError) { console.error('Admin notification failed: ' + notificationError.message); }
     return jsonResponse_({ ok: true });
   } catch (error) {
     console.error(error && error.stack ? error.stack : error);
@@ -222,6 +253,7 @@ function validatePublicTicket_(input) {
     customerName: cleanText_(input.customerName, 'Name', 100, true),
     department: cleanText_(input.department, 'Department', 100, true),
     purpose: cleanText_(input.purpose, 'Purpose', 2000, true),
+    email: validateEmail_(input.email, 'Email'),
     phone: cleanText_(input.phone, 'Phone', 40, false),
     notes: cleanText_(input.notes, 'Notes', 4000, false),
     quantity: positiveNumber_(input.quantity, 'Quantity', 10000, true),
@@ -427,14 +459,15 @@ function inspectFile_(name, bytes) {
 function syncServerRow_(input, lock) {
   var properties = PropertiesService.getScriptProperties();
   var secret = properties.getProperty('SHARED_SECRET');
-  if (!secret || input.secret !== secret || input.row.length !== 19 || typeof input.row[0] !== 'string' || !Number.isInteger(input.row[18])) return jsonResponse_({ ok: false });
+  if (!secret || input.secret !== secret || [19, 20].indexOf(input.row.length) === -1 || typeof input.row[0] !== 'string' || !Number.isInteger(input.row[18])) return jsonResponse_({ ok: false });
   lock.waitLock(20000);
   var sheet = ensureTicketSheet_(openBook_());
   var match = findRow_(sheet, 1, input.row[0]);
   if (match && Number(sheet.getRange(match, 19).getValue()) >= input.row[18]) return jsonResponse_({ ok: true });
   var target = match || sheet.getLastRow() + 1;
-  sheet.getRange(target, 1, 1, 19).setValues([input.row.map(escapeCell_)]);
+  sheet.getRange(target, 1, 1, 19).setValues([input.row.slice(0, 19).map(escapeCell_)]);
   sheet.getRange(target, 22).setValue('Node API');
+  if (input.row.length === 20) sheet.getRange(target, 23).setValue(escapeCell_(input.row[19]));
   SpreadsheetApp.flush();
   return jsonResponse_({ ok: true });
 }
@@ -499,6 +532,95 @@ function incrementDailyCount_(properties) {
   var record = String(properties.getProperty('DAILY_TICKET_COUNT') || '').split(':');
   var count = record[0] === key ? Number(record[1] || 0) : 0;
   properties.setProperty('DAILY_TICKET_COUNT', key + ':' + (count + 1));
+}
+
+function onTicketStatusEdit(event) {
+  if (!event || !event.range || event.range.getSheet().getName() !== TICKET_SHEET) return;
+  if (event.range.getColumn() !== 14 || event.range.getNumRows() !== 1 || event.range.getNumColumns() !== 1) return;
+  var status = String(event.range.getDisplayValue() || '').trim().toLowerCase();
+  var oldStatus = String(event.oldValue || '').trim().toLowerCase();
+  if (STATUSES.indexOf(status) === -1 || status === oldStatus) return;
+  var sheet = event.range.getSheet();
+  var rowNumber = event.range.getRow();
+  if (rowNumber < 2) return;
+  var row = sheet.getRange(rowNumber, 1, 1, HEADERS.length).getValues()[0];
+  var updatedAt = new Date();
+  sheet.getRange(rowNumber, 18).setValue(updatedAt);
+  sheet.getRange(rowNumber, 19).setValue(Math.max(1, Number(row[18]) || 1) + 1);
+  try { notifyCustomerOfStatus_(row, status); }
+  catch (notificationError) { console.error('Customer notification failed: ' + notificationError.message); }
+}
+
+function notifyAdminsOfNewTicket_(request, ticketNumber, properties) {
+  var recipients = parseEmailList_(properties.getProperty('ADMIN_NOTIFICATION_EMAILS') || '');
+  if (!recipients.length) return false;
+  var subject = '[Mandir tickets] New ' + ticketNumber;
+  var body = [
+    'A new ' + (request.machine === 'printer' ? 'poster printing' : 'foam cutting') + ' ticket was submitted.',
+    '',
+    'Ticket: ' + ticketNumber,
+    'Requester: ' + request.customerName,
+    'Department: ' + request.department,
+    'Needed by: ' + request.neededBy,
+    'Purpose: ' + request.purpose
+  ].join('\n');
+  var message = {
+    to: recipients[0],
+    replyTo: request.email,
+    subject: subject,
+    body: body,
+    name: 'Mandir Workshop Tickets'
+  };
+  if (recipients.length > 1) message.bcc = recipients.slice(1).join(',');
+  MailApp.sendEmail(message);
+  return true;
+}
+
+function notifyCustomerOfStatus_(row, status) {
+  var email = String(row[22] || '').trim().toLowerCase();
+  if (!email) return false;
+  email = validateEmail_(email, 'Customer email');
+  var labels = {
+    queued: 'Waiting',
+    'in-progress': 'Being made',
+    ready: 'Ready for pickup',
+    collected: 'Picked up',
+    cancelled: 'Cancelled'
+  };
+  var ticketNumber = String(row[1]);
+  var label = labels[status] || status;
+  MailApp.sendEmail({
+    to: email,
+    subject: '[Mandir tickets] ' + ticketNumber + ' is ' + label.toLowerCase(),
+    body: [
+      'Your Mandir workshop ticket ' + ticketNumber + ' was updated.',
+      '',
+      'Current status: ' + label,
+      'Request: ' + String(row[2])
+    ].join('\n'),
+    name: 'Mandir Workshop Tickets'
+  });
+  return true;
+}
+
+function validateEmail_(value, label) {
+  if (typeof value !== 'string') throw new Error(label + ' is invalid.');
+  var email = value.trim().toLowerCase();
+  if (!email || email.length > 254 || /[\r\n]/.test(email) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new Error('Enter a valid ' + label.toLowerCase() + '.');
+  }
+  return email;
+}
+
+function parseEmailList_(value) {
+  var seen = {};
+  return String(value || '').split(',').map(function(email) {
+    return email.trim() ? validateEmail_(email, 'Admin notification email') : '';
+  }).filter(function(email) {
+    if (!email || seen[email]) return false;
+    seen[email] = true;
+    return true;
+  });
 }
 
 function cleanText_(value, label, maxLength, required) {

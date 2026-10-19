@@ -9,6 +9,7 @@ import { createStore, validateTicket, publicQueue, machines, papers, deadlines, 
 import { createSheetsSync, csv } from './lib/sheets.js';
 import { validateFilename, validateUpload, createMalwareScanner } from './lib/uploads.js';
 import { acquireProcessLock } from './lib/process-lock.js';
+import { createNotificationService } from './lib/notifications.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.DATA_DIR || path.join(here, 'data');
@@ -33,6 +34,17 @@ const releaseLock = acquireProcessLock(dataDir);
 process.once('exit', releaseLock);
 const store = await createStore(dataDir);
 const sheets = createSheetsSync(store, { url: process.env.SHEETS_WEBHOOK_URL, secret: process.env.SHEETS_SHARED_SECRET });
+const notifications = await createNotificationService(dataDir, {
+  host: process.env.SMTP_HOST,
+  port: process.env.SMTP_PORT,
+  secure: process.env.SMTP_SECURE,
+  user: process.env.SMTP_USER,
+  password: process.env.SMTP_PASSWORD,
+  from: process.env.NOTIFICATION_FROM,
+  adminEmails: process.env.ADMIN_NOTIFICATION_EMAILS,
+  appUrl: process.env.APP_ORIGIN,
+});
+const enqueueNotification = operation => operation.catch(error => console.error('Could not queue notification:', error.message));
 const app = express();
 app.disable('x-powered-by');
 app.use((req, res, next) => {
@@ -147,6 +159,7 @@ app.post('/api/tickets', (req, res, next) => {
     const { ticket, duplicate } = await store.create(details, key);
     committed = !duplicate;
     if (duplicate) await cleanup(req.files);
+    if (!duplicate) await enqueueNotification(notifications.ticketCreated(ticket));
     void sheets.sync();
     res.status(duplicate ? 200 : 201).json({ ticket: { ticketNumber: ticket.ticketNumber, machine: ticket.machine, status: ticket.status,
       createdAt: ticket.createdAt, department: ticket.department,
@@ -154,10 +167,11 @@ app.post('/api/tickets', (req, res, next) => {
   } catch (error) { if (!committed) await cleanup(req.files); next(error); }
   finally { req.releaseUploadSlot(); }
 });
-app.get('/api/tickets', requireAdmin, (_req, res) => res.json({ tickets: store.list(), sheets: sheets.state() }));
+app.get('/api/tickets', requireAdmin, (_req, res) => res.json({ tickets: store.list(), sheets: sheets.state(), notifications: notifications.state() }));
 app.patch('/api/tickets/:id', requireAdmin, async (req, res) => {
   if (!req.body || !Number.isSafeInteger(req.body.expectedRevision) || req.body.expectedRevision < 1) fail('Refresh the ticket before changing its status.');
   const ticket = await store.update(req.params.id, req.body.status, req.body.expectedRevision);
+  if (ticket.revision > req.body.expectedRevision) await enqueueNotification(notifications.ticketUpdated(ticket));
   void sheets.sync();
   res.json({ ticket });
 });
@@ -190,7 +204,7 @@ void sheets.sync();
 const server = app.listen(Number(process.env.PORT || 3000), () => console.log('Mandir Ticket Desk ready on port ' + server.address().port));
 server.requestTimeout = 0; // Stream large uploads without an application timeout.
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
-  clearInterval(interval); clearInterval(authCleanup);
+  clearInterval(interval); clearInterval(authCleanup); notifications.close();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(1), 30000).unref();
 });

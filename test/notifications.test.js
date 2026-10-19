@@ -1,0 +1,112 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { createNotificationService, normalizeEmail, parseEmailList } from '../lib/notifications.js';
+
+async function temporaryDirectory(t) {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mandir-notifications-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  return directory;
+}
+
+const config = {
+  host: 'smtp.example.com',
+  port: '587',
+  secure: 'false',
+  user: 'smtp-user',
+  password: 'smtp-password',
+  from: 'Mandir Workshop <tickets@example.com>',
+  adminEmails: 'owner@example.com, helper@example.com, OWNER@example.com',
+  appUrl: 'https://tickets.example.com/request',
+};
+
+const ticket = {
+  ticketNumber: 'P-0042',
+  machine: 'printer',
+  customerName: 'Ticket Requester',
+  department: 'Events',
+  purpose: 'Festival banner',
+  neededBy: 'This week',
+  email: 'requester@example.com',
+  status: 'ready',
+};
+
+test('email validation normalizes addresses and rejects unsafe values', () => {
+  assert.equal(normalizeEmail(' Person@Example.COM '), 'person@example.com');
+  assert.deepEqual(parseEmailList('a@example.com, B@example.com, a@example.com'), ['a@example.com', 'b@example.com']);
+  for (const value of ['', 'not-an-email', 'a@example.com\nBcc: victim@example.com']) assert.throws(() => normalizeEmail(value));
+});
+
+test('notification service emails every admin once and emails the requester on status changes', async t => {
+  const sent = [];
+  const service = await createNotificationService(await temporaryDirectory(t), config, {
+    createTransport: options => ({
+      sendMail: async message => sent.push({ options, message }),
+      close() {},
+    }),
+  });
+  t.after(() => service.close());
+
+  await service.ticketCreated(ticket);
+  await service.flush();
+  assert.deepEqual(sent.map(item => item.message.to), ['owner@example.com', 'helper@example.com']);
+  assert.ok(sent.every(item => item.message.replyTo === ticket.email));
+  assert.match(sent[0].message.text, /P-0042/);
+
+  await service.ticketUpdated(ticket);
+  await service.flush();
+  assert.equal(sent[2].message.to, ticket.email);
+  assert.match(sent[2].message.subject, /ready for pickup/i);
+  assert.match(sent[2].message.text, /https:\/\/tickets\.example\.com\/#tracker/);
+  assert.deepEqual(service.state(), {
+    configured: true,
+    adminRecipientCount: 2,
+    pending: 0,
+    lastError: null,
+    lastSuccess: service.state().lastSuccess,
+  });
+  assert.ok(!Number.isNaN(Date.parse(service.state().lastSuccess)));
+});
+
+test('failed delivery remains in the persistent retry queue without rejecting the ticket operation', async t => {
+  const errors = [];
+  const directory = await temporaryDirectory(t);
+  const service = await createNotificationService(directory, config, {
+    createTransport: () => ({ sendMail: async () => { throw new Error('SMTP unavailable'); }, close() {} }),
+    reportError: error => errors.push(error.message),
+  });
+  t.after(() => service.close());
+
+  assert.equal(await service.ticketUpdated(ticket), true);
+  await service.flush();
+  assert.equal(service.state().pending, 1);
+  assert.match(service.state().lastError, /retry/i);
+  assert.deepEqual(errors, ['SMTP unavailable']);
+  const stored = JSON.parse(await fs.readFile(path.join(directory, 'notifications.json'), 'utf8'));
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].attempts, 1);
+  service.close();
+
+  stored[0].nextAttemptAt = new Date(0).toISOString();
+  await fs.writeFile(path.join(directory, 'notifications.json'), JSON.stringify(stored));
+  const recovered = [];
+  const restarted = await createNotificationService(directory, config, {
+    createTransport: () => ({ sendMail: async message => recovered.push(message), close() {} }),
+  });
+  t.after(() => restarted.close());
+  await restarted.flush();
+  assert.equal(restarted.state().pending, 0);
+  assert.equal(recovered[0].to, ticket.email);
+});
+
+test('notification service can remain disabled until SMTP is configured', async t => {
+  const directory = await temporaryDirectory(t);
+  const service = await createNotificationService(directory, { port: '587', secure: 'false', adminEmails: 'owner@example.com' });
+  t.after(() => service.close());
+  assert.equal(await service.ticketCreated(ticket), false);
+  assert.equal(service.state().configured, false);
+  assert.equal(service.state().pending, 0);
+  await assert.rejects(createNotificationService(directory, { host: 'smtp.example.com' }), /NOTIFICATION_FROM/);
+});

@@ -32,6 +32,7 @@ const baseTicket = () => ({
   customerName: 'Test Person',
   department: 'Events',
   purpose: 'Stage letters',
+  email: 'requester@example.com',
   phone: '',
   notes: '',
   quantity: '2',
@@ -96,6 +97,7 @@ test('Apps Script backend requires a valid Drive checksum on every direct-upload
 });
 
 test('Apps Script backend rejects invalid dimensions, deadlines, keys, and attachments', () => {
+  assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), email: 'not-an-email' }), /valid email/i);
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), width: '0' }), /valid width/i);
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), neededBy: 'Eventually' }), /needed/i);
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), requestKey: 'short' }), /Refresh/i);
@@ -220,10 +222,11 @@ test('Drive file verification checks ownership, byte count, and checksum and rem
 });
 
 test('duplicate createTicket requests write one Sheet row and reuse the first ticket', () => {
-  const properties = propertiesStore({});
+  const properties = propertiesStore({ ADMIN_NOTIFICATION_EMAILS: 'owner@example.com, helper@example.com' });
   let rowWritten = false;
   let fileSaves = 0;
   let dailyIncrements = 0;
+  const emails = [];
   const writtenRows = [];
   const lock = {
     locked: false,
@@ -245,6 +248,7 @@ test('duplicate createTicket requests write one Sheet row and reuse the first ti
     PropertiesService: { getScriptProperties: () => properties },
     SpreadsheetApp: { flush() {} },
     Utilities: { getUuid: () => 'ticket-uuid' },
+    MailApp: { sendEmail: message => emails.push(message) },
   });
   isolated.validatePublicTicket_ = () => ({ ...baseTicket(), machine: 'foam', files: [] });
   isolated.ensureTicketSheet_ = () => sheet;
@@ -268,4 +272,43 @@ test('duplicate createTicket requests write one Sheet row and reuse the first ti
   assert.equal(writtenRows.length, 1);
   assert.equal(fileSaves, 1);
   assert.equal(dailyIncrements, 1);
+  assert.equal(emails.length, 1);
+  assert.equal(emails[0].to, 'owner@example.com');
+  assert.equal(emails[0].bcc, 'helper@example.com');
+  assert.ok(emails.every(message => message.replyTo === 'requester@example.com'));
+});
+
+test('installed status edit handler emails the requester and advances revision metadata', () => {
+  const sent = [];
+  const writes = [];
+  const row = Array(23).fill('');
+  row[1] = 'F-0007';
+  row[2] = 'Foam cutting';
+  row[13] = 'ready';
+  row[18] = 3;
+  row[22] = 'requester@example.com';
+  const sheet = {
+    getName: () => 'Tickets',
+    getRange(_row, column, _rows, columns) {
+      if (column === 1 && columns === 23) return { getValues: () => [row] };
+      return { setValue: value => writes.push({ column, value }) };
+    },
+  };
+  const range = {
+    getSheet: () => sheet,
+    getColumn: () => 14,
+    getNumRows: () => 1,
+    getNumColumns: () => 1,
+    getDisplayValue: () => 'ready',
+    getRow: () => 2,
+  };
+  const isolated = loadContext({ MailApp: { sendEmail: message => sent.push(message) } });
+
+  isolated.onTicketStatusEdit({ range, oldValue: 'in-progress' });
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to, 'requester@example.com');
+  assert.match(sent[0].subject, /F-0007.*ready for pickup/i);
+  assert.equal(writes.find(write => write.column === 19).value, 4);
+  assert.ok(!Number.isNaN(Date.parse(writes.find(write => write.column === 18).value)));
 });

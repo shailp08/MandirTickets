@@ -8,7 +8,7 @@ import { once } from 'node:events';
 import { createStore, validateTicket, publicQueue, machines } from '../lib/store.js';
 import { createSheetsSync, csv } from '../lib/sheets.js';
 
-const input = { machine:'foam', customerName:'Test Person', department:'Events', purpose:'Stage lettering', phone:'', quantity:'2', width:'20', length:'36', thickness:'2', neededBy:'Tomorrow' };
+const input = { machine:'foam', customerName:'Test Person', department:'Events', purpose:'Stage lettering', email:'requester@example.com', phone:'', quantity:'2', width:'20', length:'36', thickness:'2', neededBy:'Tomorrow' };
 async function temp(t) { const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mandir-test-')); t.after(()=>fs.rm(dir,{recursive:true,force:true})); return dir; }
 
 test('uses plain-language public machine names', () => {
@@ -28,11 +28,12 @@ test('concurrent requests keep every ticket and assign independent, persistent q
   const print=validateTicket({...input,machine:'printer',paperType:'Canvas'},[{originalName:'poster.pdf',storedName:'file.pdf',size:100}]);
   assert.equal((await restored.create(print,'print')).ticket.ticketNumber,'P-0001');
 });
-test('validates department, purpose, printer width, quantity and required print files',()=>{
-  for(const patch of [{department:''},{purpose:''},{width:'-1'},{quantity:'1.5'},{thickness:'0'},{neededBy:'Invalid'}]) assert.throws(()=>validateTicket({...input,...patch},[]));
+test('validates contact details, purpose, printer width, quantity and required print files',()=>{
+  for(const patch of [{department:''},{purpose:''},{email:''},{email:'not-an-email'},{width:'-1'},{quantity:'1.5'},{thickness:'0'},{neededBy:'Invalid'}]) assert.throws(()=>validateTicket({...input,...patch},[]));
   assert.throws(()=>validateTicket({...input,machine:'printer',paperType:'Standard',width:'25'},[{originalName:'a.pdf'}]));
   assert.throws(()=>validateTicket({...input,machine:'printer',paperType:'Standard'},[]));
   assert.equal(validateTicket(input,[]).machine,'foam');
+  assert.equal(validateTicket({...input,email:' Person@Example.COM '},[]).email,'person@example.com');
 });
 test('status changes move queue positions, hide closed jobs, preserve history and private data',async t=>{
   const store=await createStore(await temp(t));
@@ -115,7 +116,7 @@ test('HTTP flow: auth, uploads, receipt, privacy, tracking, status and export',a
   const response=await fetch(base+'/api/tickets',{method:'POST',headers:{'idempotency-key':'http-test-request-123'},body:form()});
   assert.equal(response.status,201);const receipt=await response.json();assert.equal(receipt.ticket.ticketNumber,'P-0001');
   const retry=await fetch(base+'/api/tickets',{method:'POST',headers:{'idempotency-key':'http-test-request-123'},body:form()});assert.equal(retry.status,200);
-  const list=await(await fetch(base+'/api/tickets',{headers:{cookie}})).json();assert.equal(list.tickets.length,1);assert.equal(list.sheets.configured,false);
+  const list=await(await fetch(base+'/api/tickets',{headers:{cookie}})).json();assert.equal(list.tickets.length,1);assert.equal(list.sheets.configured,false);assert.equal(list.notifications.configured,false);
   const job=list.tickets[0], download=base+'/api/tickets/'+job.id+'/files/'+job.files[0].storedName;
   assert.equal((await fetch(download)).status,401);
   const downloaded = await fetch(download,{headers:{cookie}});
@@ -138,7 +139,7 @@ test('HTTP flow: auth, uploads, receipt, privacy, tracking, status and export',a
   assert.equal(oversizedResponse.status,400); assert.match((await oversizedResponse.json()).error,/1 MB/);
   assert.equal((await fs.readdir(path.join(dir,'uploads'))).length,1);
   assert.equal((await(await fetch(base+'/api/track/P-0001')).json()).status,'ready');
-  const queue=await(await fetch(base+'/api/queue')).text();assert.ok(!queue.includes('Test Person'));assert.ok(!queue.includes('sample.pdf'));
+  const queue=await(await fetch(base+'/api/queue')).text();assert.ok(!queue.includes('Test Person'));assert.ok(!queue.includes('requester@example.com'));assert.ok(!queue.includes('sample.pdf'));
   assert.equal((await fetch(base+'/api/export')).status,401);assert.match(await(await fetch(base+'/api/export',{headers:{cookie}})).text(),/P-0001/);
   assert.equal((await fetch(base+'/api/session',{method:'POST',headers:{origin:'https://other.invalid','content-type':'application/json'},body:'{}'})).status,403);
   assert.equal((await fetch(base+'/api/session',{method:'POST',headers:{origin:base.replace('http:','https:'),'content-type':'application/json'},body:'{}'})).status,403);

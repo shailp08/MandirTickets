@@ -20,6 +20,7 @@ const requestDetails = requestKey => ({
   customerName: 'Pipeline Test',
   department: 'Workshop',
   purpose: 'Verify upload delivery',
+  email: 'pipeline@example.com',
   phone: '',
   notes: '',
   quantity: '1',

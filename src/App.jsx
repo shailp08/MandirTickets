@@ -237,9 +237,10 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
           <div className="field-grid">
             <label>Name <span>Required</span><input name="customerName" autoComplete="name" required maxLength="100" placeholder="Your name" /></label>
             <label>Department <span>Required</span><input name="department" required maxLength="100" placeholder="Decorations, Events, Youth" /></label>
+            <label>Email <span>Required</span><input name="email" type="email" autoComplete="email" required maxLength="254" placeholder="you@example.com" /></label>
+            <label>Phone <span>Optional</span><input name="phone" type="tel" autoComplete="tel" maxLength="40" placeholder="For questions about the job" /></label>
             <label className="field-full">What is this for? <span>Required</span><textarea name="purpose" required maxLength="2000" rows="4" placeholder="Describe the event, project, and how the finished piece will be used." /></label>
             <label>Needed by <span>Required</span><select name="neededBy" required defaultValue="No rush"><option>Today</option><option>Tomorrow</option><option>This week</option><option>No rush</option></select></label>
-            <label>Phone <span>Optional</span><input name="phone" type="tel" autoComplete="tel" maxLength="40" placeholder="For questions about the job" /></label>
           </div>
         </fieldset>
 

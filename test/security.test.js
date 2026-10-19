@@ -8,7 +8,7 @@ import { validateFilename, validateUpload, createMalwareScanner } from '../lib/u
 import { validateTicket, createStore } from '../lib/store.js';
 import { acquireProcessLock } from '../lib/process-lock.js';
 
-const details = { machine:'foam', customerName:'QA', department:'Testing', purpose:'Test fixture', quantity:'1', width:'20', length:'24', thickness:'2', neededBy:'No rush' };
+const details = { machine:'foam', customerName:'QA', department:'Testing', purpose:'Test fixture', email:'qa@example.com', quantity:'1', width:'20', length:'24', thickness:'2', neededBy:'No rush' };
 async function directory(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(),'mandir-security-'));
   t.after(() => fs.rm(dir,{recursive:true,force:true})); return dir;
