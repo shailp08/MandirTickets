@@ -3,11 +3,16 @@
 // then deploy it as a web app that executes as you and is reachable by Anyone.
 
 var TICKET_SHEET = 'Tickets';
+var NOTIFICATION_SHEET = 'Notification Outbox';
 var HEADERS = [
   'Ticket ID', 'Queue number', 'Machine', 'Name', 'Department', 'Purpose', 'Phone',
   'Quantity', 'Paper', 'Width (in)', 'Length (in)', 'Thickness (in)', 'Needed by',
   'Status', 'Notes', 'Files', 'Created', 'Updated', 'Revision',
-  'Tracking code', 'Request key', 'Source', 'Customer email'
+  'Tracking code', 'Request key', 'Source', 'Customer email', 'Last notified status'
+];
+var NOTIFICATION_HEADERS = [
+  'Notification ID', 'To', 'Bcc', 'Reply to', 'Subject', 'Body', 'Created',
+  'Attempts', 'Last error', 'Next attempt', 'Delivered'
 ];
 var STATUSES = ['queued', 'in-progress', 'ready', 'collected', 'cancelled'];
 var MACHINES = { printer: 'Poster printing', foam: 'Foam cutting' };
@@ -48,8 +53,14 @@ function setupMandirTicketSystem() {
     var ownerEmail = String(Session.getEffectiveUser().getEmail() || '').trim().toLowerCase();
     if (ownerEmail) properties.setProperty('ADMIN_NOTIFICATION_EMAILS', ownerEmail);
   }
+  if (!properties.getProperty('NOTIFICATION_OUTBOX_STARTED_AT')) {
+    properties.setProperty('NOTIFICATION_OUTBOX_STARTED_AT', new Date().toISOString());
+  }
   ensureTicketSheet_(book);
+  initializeNotificationStatusMarkers_(book);
+  ensureNotificationSheet_(book);
   installStatusNotificationTrigger_(book);
+  installNotificationRetryTrigger_();
   authorizeLargeFileUploads();
   formatTicketSheet();
   SpreadsheetApp.getUi().alert('The private ticket sheet, Drive upload folder, and email notifications are ready. Use Ticket system → Configure notification emails to add more admins, then deploy this script as a web app.');
@@ -76,6 +87,13 @@ function installStatusNotificationTrigger_(book) {
     return trigger.getHandlerFunction() === 'onTicketStatusEdit';
   });
   if (!exists) ScriptApp.newTrigger('onTicketStatusEdit').forSpreadsheet(book).onEdit().create();
+}
+
+function installNotificationRetryTrigger_() {
+  var exists = ScriptApp.getProjectTriggers().some(function(trigger) {
+    return trigger.getHandlerFunction() === 'retryTicketNotifications';
+  });
+  if (!exists) ScriptApp.newTrigger('retryTicketNotifications').timeBased().everyMinutes(5).create();
 }
 
 function authorizeLargeFileUploads() {
@@ -145,6 +163,7 @@ function formatTicketSheet() {
   sheet.setColumnWidth(16, 260);
   sheet.hideColumns(1);
   sheet.hideColumns(20, 2);
+  sheet.hideColumns(24);
   var validation = SpreadsheetApp.newDataValidation().requireValueInList(STATUSES, true).setAllowInvalid(false).build();
   sheet.getRange(2, 14, Math.max(sheet.getMaxRows() - 1, 1), 1).setDataValidation(validation);
   return true;
@@ -167,6 +186,9 @@ function doPost(event) {
     var existing = findRow_(sheet, 21, request.requestKey);
     if (existing) {
       properties.deleteProperty(uploadReservationKey_(request.requestKey));
+      if (lock.hasLock()) lock.releaseLock();
+      try { retryTicketNotifications(); }
+      catch (notificationError) { console.error('Could not retry notifications: ' + notificationError.message); }
       return jsonResponse_({ ok: true, duplicate: true });
     }
     enforceDailyLimit_(properties);
@@ -180,14 +202,17 @@ function doPost(event) {
       request.department, request.purpose, request.phone, request.quantity,
       request.paperType, request.width, request.length, request.thickness,
       request.neededBy, 'queued', request.notes, uploadedFiles.join('\n'),
-      createdAt, createdAt, 1, trackingCode, request.requestKey, 'GitHub Pages', request.email
+      createdAt, createdAt, 1, trackingCode, request.requestKey, 'GitHub Pages', request.email, 'queued'
     ];
     sheet.getRange(sheet.getLastRow() + 1, 1, 1, HEADERS.length).setValues([row.map(escapeCell_)]);
     SpreadsheetApp.flush();
     incrementDailyCount_(properties);
     properties.deleteProperty(uploadReservationKey_(request.requestKey));
-    try { notifyAdminsOfNewTicket_(request, ticketNumber, properties); }
-    catch (notificationError) { console.error('Admin notification failed: ' + notificationError.message); }
+    try { notifyAdminsOfNewTicket_(request, ticketNumber, properties, openBook_(), true); }
+    catch (notificationError) { console.error('Could not queue admin notification: ' + notificationError.message); }
+    if (lock.hasLock()) lock.releaseLock();
+    try { retryTicketNotifications(); }
+    catch (notificationError) { console.error('Could not deliver queued notifications: ' + notificationError.message); }
     return jsonResponse_({ ok: true });
   } catch (error) {
     console.error(error && error.stack ? error.stack : error);
@@ -487,6 +512,36 @@ function ensureTicketSheet_(book) {
   return sheet;
 }
 
+function initializeNotificationStatusMarkers_(book) {
+  var sheet = ensureTicketSheet_(book);
+  if (sheet.getLastRow() < 2) return;
+  var count = sheet.getLastRow() - 1;
+  var statuses = sheet.getRange(2, 14, count, 1).getDisplayValues();
+  var markers = sheet.getRange(2, 24, count, 1).getDisplayValues();
+  var changed = false;
+  for (var i = 0; i < count; i++) {
+    if (!markers[i][0] && STATUSES.indexOf(String(statuses[i][0]).trim().toLowerCase()) !== -1) {
+      markers[i][0] = String(statuses[i][0]).trim().toLowerCase();
+      changed = true;
+    }
+  }
+  if (changed) sheet.getRange(2, 24, count, 1).setValues(markers);
+}
+
+function ensureNotificationSheet_(book) {
+  var sheet = book.getSheetByName(NOTIFICATION_SHEET) || book.insertSheet(NOTIFICATION_SHEET);
+  if (!sheet.getLastRow()) sheet.getRange(1, 1, 1, NOTIFICATION_HEADERS.length).setValues([NOTIFICATION_HEADERS]);
+  if (sheet.getMaxColumns() < NOTIFICATION_HEADERS.length) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), NOTIFICATION_HEADERS.length - sheet.getMaxColumns());
+  }
+  var current = sheet.getRange(1, 1, 1, NOTIFICATION_HEADERS.length).getDisplayValues()[0];
+  for (var i = 0; i < NOTIFICATION_HEADERS.length; i++) {
+    if (!current[i]) sheet.getRange(1, i + 1).setValue(NOTIFICATION_HEADERS[i]);
+  }
+  if (!sheet.isSheetHidden()) sheet.hideSheet();
+  return sheet;
+}
+
 function findRow_(sheet, column, value) {
   if (sheet.getLastRow() < 2) return 0;
   var match = sheet.getRange(2, column, sheet.getLastRow() - 1, 1).createTextFinder(String(value)).matchEntireCell(true).findNext();
@@ -536,22 +591,65 @@ function incrementDailyCount_(properties) {
 
 function onTicketStatusEdit(event) {
   if (!event || !event.range || event.range.getSheet().getName() !== TICKET_SHEET) return;
-  if (event.range.getColumn() !== 14 || event.range.getNumRows() !== 1 || event.range.getNumColumns() !== 1) return;
-  var status = String(event.range.getDisplayValue() || '').trim().toLowerCase();
-  var oldStatus = String(event.oldValue || '').trim().toLowerCase();
-  if (STATUSES.indexOf(status) === -1 || status === oldStatus) return;
+  if (event.range.getColumn() !== 14 || event.range.getNumColumns() !== 1) return;
   var sheet = event.range.getSheet();
-  var rowNumber = event.range.getRow();
-  if (rowNumber < 2) return;
-  var row = sheet.getRange(rowNumber, 1, 1, HEADERS.length).getValues()[0];
-  var updatedAt = new Date();
-  sheet.getRange(rowNumber, 18).setValue(updatedAt);
-  sheet.getRange(rowNumber, 19).setValue(Math.max(1, Number(row[18]) || 1) + 1);
-  try { notifyCustomerOfStatus_(row, status); }
-  catch (notificationError) { console.error('Customer notification failed: ' + notificationError.message); }
+  var firstRow = event.range.getRow();
+  var rowCount = event.range.getNumRows();
+  if (firstRow + rowCount - 1 < 2) return;
+  var statuses = event.range.getDisplayValues();
+  var oldStatus = rowCount === 1 ? String(event.oldValue || '').trim().toLowerCase() : '';
+  var lock = LockService.getScriptLock();
+  var queued = false;
+  try { lock.waitLock(300000); }
+  catch (lockError) {
+    try { recordPendingStatusEdits_(sheet, firstRow, statuses); }
+    catch (recoveryError) { console.error('Could not record status notification recovery: ' + recoveryError.message); }
+    console.error('Status notification will be reconciled after lock timeout: ' + lockError.message);
+    return false;
+  }
+  try {
+    var book = openBook_();
+    for (var i = 0; i < rowCount; i++) {
+      var rowNumber = firstRow + i;
+      var status = String(statuses[i] && statuses[i][0] || '').trim().toLowerCase();
+      if (rowNumber < 2 || STATUSES.indexOf(status) === -1 || (rowCount === 1 && status === oldStatus)) continue;
+      var row = sheet.getRange(rowNumber, 1, 1, HEADERS.length).getValues()[0];
+      if (String(row[23] || '').trim().toLowerCase() === status) continue;
+      var updatedAt = new Date();
+      var revision = Math.max(1, Number(row[18]) || 1) + 1;
+      try {
+        if (notifyCustomerOfStatus_(row, status, revision, book, true)) queued = true;
+        sheet.getRange(rowNumber, 18).setValue(updatedAt);
+        sheet.getRange(rowNumber, 19).setValue(revision);
+        sheet.getRange(rowNumber, 24).setValue(status);
+      }
+      catch (notificationError) {
+        try { recordPendingStatusEdits_(sheet, rowNumber, [[status]]); }
+        catch (recoveryError) { console.error('Could not record status notification recovery: ' + recoveryError.message); }
+        console.error('Could not queue customer notification: ' + notificationError.message);
+      }
+    }
+  } finally {
+    if (lock.hasLock()) lock.releaseLock();
+  }
+  if (queued) {
+    try { retryTicketNotifications(); }
+    catch (notificationError) { console.error('Could not deliver queued notifications: ' + notificationError.message); }
+  }
 }
 
-function notifyAdminsOfNewTicket_(request, ticketNumber, properties) {
+function recordPendingStatusEdits_(sheet, firstRow, statuses) {
+  var properties = PropertiesService.getScriptProperties();
+  for (var i = 0; i < statuses.length; i++) {
+    var rowNumber = firstRow + i;
+    var status = String(statuses[i] && statuses[i][0] || '').trim().toLowerCase();
+    if (rowNumber < 2 || STATUSES.indexOf(status) === -1) continue;
+    var ticketId = String(sheet.getRange(rowNumber, 1).getDisplayValue() || '');
+    if (ticketId) properties.setProperty('PENDING_STATUS_NOTIFICATION_' + ticketId, JSON.stringify({ status: status }));
+  }
+}
+
+function notifyAdminsOfNewTicket_(request, ticketNumber, properties, book, deferFlush) {
   var recipients = parseEmailList_(properties.getProperty('ADMIN_NOTIFICATION_EMAILS') || '');
   if (!recipients.length) return false;
   var subject = '[Mandir tickets] New ' + ticketNumber;
@@ -564,19 +662,19 @@ function notifyAdminsOfNewTicket_(request, ticketNumber, properties) {
     'Needed by: ' + request.neededBy,
     'Purpose: ' + request.purpose
   ].join('\n');
-  var message = {
+  enqueueNotification_(book, {
+    id: 'new-ticket:' + request.requestKey,
     to: recipients[0],
+    bcc: recipients.slice(1).join(','),
     replyTo: request.email,
     subject: subject,
-    body: body,
-    name: 'Mandir Workshop Tickets'
-  };
-  if (recipients.length > 1) message.bcc = recipients.slice(1).join(',');
-  MailApp.sendEmail(message);
+    body: body
+  });
+  if (!deferFlush) flushNotifications_(book);
   return true;
 }
 
-function notifyCustomerOfStatus_(row, status) {
+function notifyCustomerOfStatus_(row, status, revision, book, deferFlush) {
   var email = String(row[22] || '').trim().toLowerCase();
   if (!email) return false;
   email = validateEmail_(email, 'Customer email');
@@ -589,7 +687,8 @@ function notifyCustomerOfStatus_(row, status) {
   };
   var ticketNumber = String(row[1]);
   var label = labels[status] || status;
-  MailApp.sendEmail({
+  enqueueNotification_(book, {
+    id: 'status:' + String(row[0]) + ':' + String(revision) + ':' + status,
     to: email,
     subject: '[Mandir tickets] ' + ticketNumber + ' is ' + label.toLowerCase(),
     body: [
@@ -597,16 +696,174 @@ function notifyCustomerOfStatus_(row, status) {
       '',
       'Current status: ' + label,
       'Request: ' + String(row[2])
-    ].join('\n'),
-    name: 'Mandir Workshop Tickets'
+    ].join('\n')
   });
+  if (!deferFlush) flushNotifications_(book);
   return true;
+}
+
+function enqueueNotification_(book, notification) {
+  var sheet = ensureNotificationSheet_(book);
+  if (findRow_(sheet, 1, notification.id)) return false;
+  var createdAt = new Date();
+  sheet.getRange(sheet.getLastRow() + 1, 1, 1, NOTIFICATION_HEADERS.length).setValues([[
+    notification.id, notification.to, notification.bcc || '', notification.replyTo || '',
+    notification.subject, notification.body, createdAt, 0, '', createdAt, ''
+  ]]);
+  SpreadsheetApp.flush();
+  return true;
+}
+
+function flushNotifications_(book) {
+  var sheet = ensureNotificationSheet_(book);
+  if (sheet.getLastRow() < 2) return { sent: 0, pending: 0 };
+  var rowCount = sheet.getLastRow() - 1;
+  var rows = sheet.getRange(2, 1, rowCount, NOTIFICATION_HEADERS.length).getValues();
+  var now = new Date();
+  var sentRows = [];
+  var attempted = 0;
+  for (var i = 0; i < rows.length && attempted < 25; i++) {
+    var row = rows[i];
+    var nextAttempt = new Date(row[9]);
+    if (!row[0] || row[10] || (!isNaN(nextAttempt.getTime()) && nextAttempt > now)) continue;
+    attempted++;
+    var message = {
+      to: String(row[1]),
+      subject: String(row[4]),
+      body: String(row[5]),
+      name: 'Mandir Workshop Tickets'
+    };
+    if (row[2]) message.bcc = String(row[2]);
+    if (row[3]) message.replyTo = String(row[3]);
+    try {
+      MailApp.sendEmail(message);
+      sentRows.push(i + 2);
+    } catch (error) {
+      var attempts = Math.max(0, Number(row[7]) || 0) + 1;
+      var delay = Math.min(60 * 60 * 1000, 30 * 1000 * Math.pow(2, Math.min(attempts - 1, 7)));
+      sheet.getRange(i + 2, 8, 1, 3).setValues([[
+        attempts, String(error && error.message || 'Email delivery failed.').slice(0, 500), new Date(now.getTime() + delay)
+      ]]);
+      console.error('Notification delivery failed and will retry: ' + String(error && error.message || error));
+    }
+  }
+  sentRows.forEach(function(rowNumber) { sheet.getRange(rowNumber, 11).setValue(new Date()); });
+  SpreadsheetApp.flush();
+  var pending = rows.filter(function(row, index) {
+    return row[0] && !row[10] && sentRows.indexOf(index + 2) === -1;
+  }).length;
+  return { sent: sentRows.length, pending: pending };
+}
+
+function reconcileNotifications_(book) {
+  var properties = PropertiesService.getScriptProperties();
+  reconcilePendingStatusEdits_(book, properties);
+  var startedAt = new Date(properties.getProperty('NOTIFICATION_OUTBOX_STARTED_AT') || '');
+  if (isNaN(startedAt.getTime())) return 0;
+  var ticketSheet = ensureTicketSheet_(book);
+  if (ticketSheet.getLastRow() < 2) return 0;
+  var firstRow = Math.max(2, ticketSheet.getLastRow() - 499);
+  var tickets = ticketSheet.getRange(firstRow, 1, ticketSheet.getLastRow() - firstRow + 1, HEADERS.length).getValues();
+  var outbox = ensureNotificationSheet_(book);
+  var ids = {};
+  if (outbox.getLastRow() > 1) {
+    outbox.getRange(2, 1, outbox.getLastRow() - 1, 1).getDisplayValues().forEach(function(row) { ids[String(row[0])] = true; });
+  }
+  var queued = 0;
+  tickets.forEach(function(row, rowIndex) {
+    if (String(row[21]) !== 'GitHub Pages' || new Date(row[16]) < startedAt) return;
+    var requestKey = String(row[20]);
+    var adminId = 'new-ticket:' + requestKey;
+    if (requestKey && !ids[adminId]) {
+      var request = {
+        requestKey: requestKey,
+        machine: String(row[2]) === MACHINES.printer ? 'printer' : 'foam',
+        customerName: String(row[3]),
+        department: String(row[4]),
+        purpose: String(row[5]),
+        neededBy: String(row[12]),
+        email: String(row[22])
+      };
+      if (notifyAdminsOfNewTicket_(request, String(row[1]), properties, book, true)) {
+        ids[adminId] = true;
+        queued++;
+      }
+    }
+    var status = String(row[13]).trim().toLowerCase();
+    var revision = Math.max(1, Number(row[18]) || 1);
+    var statusId = 'status:' + String(row[0]) + ':' + String(revision) + ':' + status;
+    var lastNotifiedStatus = String(row[23] || '').trim().toLowerCase();
+    if (status !== lastNotifiedStatus && STATUSES.indexOf(status) !== -1) {
+      if (!ids[statusId]) {
+        var nextRevision = revision + 1;
+        if (notifyCustomerOfStatus_(row, status, nextRevision, book, true)) {
+          ids['status:' + String(row[0]) + ':' + String(nextRevision) + ':' + status] = true;
+          queued++;
+        }
+        ticketSheet.getRange(firstRow + rowIndex, 18).setValue(new Date());
+        ticketSheet.getRange(firstRow + rowIndex, 19).setValue(nextRevision);
+      }
+      ticketSheet.getRange(firstRow + rowIndex, 24).setValue(status);
+    }
+  });
+  return queued;
+}
+
+function reconcilePendingStatusEdits_(book, properties) {
+  var pending = properties.getProperties();
+  var prefix = 'PENDING_STATUS_NOTIFICATION_';
+  var sheet = ensureTicketSheet_(book);
+  Object.keys(pending).filter(function(key) { return key.indexOf(prefix) === 0; }).forEach(function(key) {
+    var ticketId = key.slice(prefix.length);
+    var rowNumber = findRow_(sheet, 1, ticketId);
+    if (!rowNumber) {
+      properties.deleteProperty(key);
+      return;
+    }
+    var row = sheet.getRange(rowNumber, 1, 1, HEADERS.length).getValues()[0];
+    var status = String(row[13] || '').trim().toLowerCase();
+    if (STATUSES.indexOf(status) === -1) return;
+    if (String(row[23] || '').trim().toLowerCase() === status) {
+      properties.deleteProperty(key);
+      return;
+    }
+    var currentRevision = Math.max(1, Number(row[18]) || 1);
+    var existingId = 'status:' + String(row[0]) + ':' + String(currentRevision) + ':' + status;
+    if (findRow_(ensureNotificationSheet_(book), 1, existingId)) {
+      sheet.getRange(rowNumber, 24).setValue(status);
+      properties.deleteProperty(key);
+      return;
+    }
+    var revision = currentRevision + 1;
+    notifyCustomerOfStatus_(row, status, revision, book, true);
+    var updatedAt = new Date();
+    sheet.getRange(rowNumber, 18).setValue(updatedAt);
+    sheet.getRange(rowNumber, 19).setValue(revision);
+    sheet.getRange(rowNumber, 24).setValue(status);
+    properties.deleteProperty(key);
+  });
+}
+
+function retryTicketNotifications() {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(300000);
+  try {
+    var book = openBook_();
+    try { reconcileNotifications_(book); }
+    catch (reconcileError) { console.error('Could not reconcile notifications: ' + reconcileError.message); }
+    return flushNotifications_(book);
+  } finally {
+    if (lock.hasLock()) lock.releaseLock();
+  }
 }
 
 function validateEmail_(value, label) {
   if (typeof value !== 'string') throw new Error(label + ' is invalid.');
   var email = value.trim().toLowerCase();
-  if (!email || email.length > 254 || /[\r\n]/.test(email) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+  var local = email.split('@')[0];
+  var pattern = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i;
+  if (!email || email.length > 254 || local.length > 64 || local.indexOf('.') === 0
+    || local.lastIndexOf('.') === local.length - 1 || local.indexOf('..') !== -1 || !pattern.test(email)) {
     throw new Error('Enter a valid ' + label.toLowerCase() + '.');
   }
   return email;

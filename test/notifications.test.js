@@ -36,7 +36,10 @@ const ticket = {
 test('email validation normalizes addresses and rejects unsafe values', () => {
   assert.equal(normalizeEmail(' Person@Example.COM '), 'person@example.com');
   assert.deepEqual(parseEmailList('a@example.com, B@example.com, a@example.com'), ['a@example.com', 'b@example.com']);
-  for (const value of ['', 'not-an-email', 'a@example.com\nBcc: victim@example.com']) assert.throws(() => normalizeEmail(value));
+  for (const value of ['', 'not-an-email', 'a@example.com\nBcc: victim@example.com', 'a,b@example.com',
+    'a<victim@example.com>', 'a\0@example.com', '.leading@example.com', 'two..dots@example.com']) {
+    assert.throws(() => normalizeEmail(value));
+  }
 });
 
 test('notification service emails every admin once and emails the requester on status changes', async t => {
@@ -52,6 +55,7 @@ test('notification service emails every admin once and emails the requester on s
   await service.ticketCreated(ticket);
   await service.flush();
   assert.deepEqual(sent.map(item => item.message.to), ['owner@example.com', 'helper@example.com']);
+  assert.ok(sent.every(item => item.options.requireTLS === true));
   assert.ok(sent.every(item => item.message.replyTo === ticket.email));
   assert.match(sent[0].message.text, /P-0042/);
 
@@ -109,4 +113,5 @@ test('notification service can remain disabled until SMTP is configured', async 
   assert.equal(service.state().configured, false);
   assert.equal(service.state().pending, 0);
   await assert.rejects(createNotificationService(directory, { host: 'smtp.example.com' }), /NOTIFICATION_FROM/);
+  await assert.rejects(createNotificationService(directory, { ...config, adminEmails: '' }), /ADMIN_NOTIFICATION_EMAILS/);
 });

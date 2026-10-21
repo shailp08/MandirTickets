@@ -26,6 +26,8 @@ function positiveInteger(value, fallback, name) {
 }
 const maxUploadBytes = positiveInteger(process.env.MAX_UPLOAD_BYTES, 200 * 1024 * 1024, 'MAX_UPLOAD_BYTES');
 const maxUploadFiles = positiveInteger(process.env.MAX_UPLOAD_FILES, 10, 'MAX_UPLOAD_FILES');
+const uploadIdleTimeoutMs = positiveInteger(process.env.UPLOAD_IDLE_TIMEOUT_MS, 60000, 'UPLOAD_IDLE_TIMEOUT_MS');
+const uploadRequestTimeoutMs = positiveInteger(process.env.UPLOAD_REQUEST_TIMEOUT_MS, 30 * 60 * 1000, 'UPLOAD_REQUEST_TIMEOUT_MS');
 if (production && (!scanner || !appOrigin?.startsWith('https://') || process.env.COOKIE_SECURE !== 'true' || (process.env.ADMIN_PASSWORD || '').length < 16)) {
   throw new Error('Production requires CLAMSCAN_PATH, an HTTPS APP_ORIGIN, COOKIE_SECURE=true, and an ADMIN_PASSWORD of at least 16 characters.');
 }
@@ -139,7 +141,30 @@ app.post('/api/tickets', (req, res, next) => {
   if (activeUploads >= 4) return res.status(429).json({ error: 'The upload service is busy. Try again shortly.' });
   activeUploads++;
   let released = false;
-  const release = () => { if (!released) { released = true; activeUploads--; } };
+  let idleTimer;
+  let requestTimer;
+  const release = () => {
+    if (released) return;
+    released = true;
+    activeUploads--;
+    clearTimeout(idleTimer);
+    clearTimeout(requestTimer);
+    req.off('data', armIdleTimeout);
+  };
+  const abortStalledUpload = () => {
+    release();
+    req.destroy();
+  };
+  function armIdleTimeout() {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(abortStalledUpload, uploadIdleTimeoutMs);
+    idleTimer.unref();
+  }
+  req.on('data', armIdleTimeout);
+  req.once('end', () => { clearTimeout(idleTimer); clearTimeout(requestTimer); });
+  armIdleTimeout();
+  requestTimer = setTimeout(abortStalledUpload, uploadRequestTimeoutMs);
+  requestTimer.unref();
   req.releaseUploadSlot = release;
   res.once('close', () => { if (!req.processingUpload) release(); });
   res.once('finish', release);
@@ -202,7 +227,8 @@ const interval = setInterval(() => void sheets.sync(), 30000);
 interval.unref();
 void sheets.sync();
 const server = app.listen(Number(process.env.PORT || 3000), () => console.log('Mandir Ticket Desk ready on port ' + server.address().port));
-server.requestTimeout = 0; // Stream large uploads without an application timeout.
+server.requestTimeout = uploadRequestTimeoutMs;
+server.headersTimeout = Math.min(60000, uploadRequestTimeoutMs);
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
   clearInterval(interval); clearInterval(authCleanup); notifications.close();
   server.close(() => process.exit(0));

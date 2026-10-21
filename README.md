@@ -66,8 +66,10 @@ Optional upload controls default to ten files and 200 MiB per file:
 
 - `MAX_UPLOAD_FILES`
 - `MAX_UPLOAD_BYTES`
+- `UPLOAD_IDLE_TIMEOUT_MS` (defaults to 60 seconds without receiving data)
+- `UPLOAD_REQUEST_TIMEOUT_MS` (defaults to a 30-minute total upload window)
 
-The Node backend sends notification emails through any SMTP provider. Configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `NOTIFICATION_FROM`, and (when required) `SMTP_USER` and `SMTP_PASSWORD`. Set `ADMIN_NOTIFICATION_EMAILS` to a comma-separated list of every admin who should receive new-ticket alerts. Failed messages are stored in `DATA_DIR/notifications.json` and retried automatically; notification status is also included in the authenticated `GET /api/tickets` response.
+The Node backend sends notification emails through any SMTP provider. Configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `NOTIFICATION_FROM`, and (when required) `SMTP_USER` and `SMTP_PASSWORD`. Set `ADMIN_NOTIFICATION_EMAILS` to a comma-separated list containing at least one admin; the server refuses to start an SMTP configuration that cannot deliver required new-ticket alerts. Authenticated SMTP on port 587 requires STARTTLS. Failed messages are stored in `DATA_DIR/notifications.json` and retried automatically; notification status is also included in the authenticated `GET /api/tickets` response.
 
 Use only one server process against a data directory. `server.lock` prevents simultaneous writers. After a crash, verify that no server on any host uses that directory before removing the lock.
 
