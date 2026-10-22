@@ -19,6 +19,7 @@ const config = {
   password: 'smtp-password',
   from: 'Mandir Workshop <tickets@example.com>',
   adminEmails: 'owner@example.com, helper@example.com, OWNER@example.com',
+  replyTo: 'support@example.com',
   appUrl: 'https://tickets.example.com/request',
 };
 
@@ -62,6 +63,7 @@ test('notification service emails every admin once and emails the requester on s
   await service.ticketUpdated(ticket);
   await service.flush();
   assert.equal(sent[2].message.to, ticket.email);
+  assert.equal(sent[2].message.replyTo, 'support@example.com');
   assert.match(sent[2].message.subject, /ready for pickup/i);
   assert.match(sent[2].message.text, /https:\/\/tickets\.example\.com\/#tracker/);
   assert.deepEqual(service.state(), {

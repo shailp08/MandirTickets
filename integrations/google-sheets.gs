@@ -4,6 +4,8 @@
 
 var TICKET_SHEET = 'Tickets';
 var NOTIFICATION_SHEET = 'Notification Outbox';
+var DEFAULT_ADMIN_NOTIFICATION_EMAIL = 'demandirtickets@googlegroups.com';
+var ADMIN_NOTIFICATION_DEFAULT_VERSION = 'google-group-v1';
 var HEADERS = [
   'Ticket ID', 'Queue number', 'Machine', 'Name', 'Department', 'Purpose', 'Phone',
   'Quantity', 'Paper', 'Width (in)', 'Length (in)', 'Thickness (in)', 'Needed by',
@@ -49,9 +51,9 @@ function setupMandirTicketSystem() {
   if (!properties.getProperty('UPLOAD_FOLDER_ID')) {
     properties.setProperty('UPLOAD_FOLDER_ID', DriveApp.createFolder('Mandir Workshop Ticket Files').getId());
   }
-  if (!properties.getProperty('ADMIN_NOTIFICATION_EMAILS')) {
-    var ownerEmail = String(Session.getEffectiveUser().getEmail() || '').trim().toLowerCase();
-    if (ownerEmail) properties.setProperty('ADMIN_NOTIFICATION_EMAILS', ownerEmail);
+  if (properties.getProperty('ADMIN_NOTIFICATION_DEFAULT_VERSION') !== ADMIN_NOTIFICATION_DEFAULT_VERSION) {
+    properties.setProperty('ADMIN_NOTIFICATION_EMAILS', DEFAULT_ADMIN_NOTIFICATION_EMAIL);
+    properties.setProperty('ADMIN_NOTIFICATION_DEFAULT_VERSION', ADMIN_NOTIFICATION_DEFAULT_VERSION);
   }
   if (!properties.getProperty('NOTIFICATION_OUTBOX_STARTED_AT')) {
     properties.setProperty('NOTIFICATION_OUTBOX_STARTED_AT', new Date().toISOString());
@@ -63,7 +65,7 @@ function setupMandirTicketSystem() {
   installNotificationRetryTrigger_();
   authorizeLargeFileUploads();
   formatTicketSheet();
-  SpreadsheetApp.getUi().alert('The private ticket sheet, Drive upload folder, and email notifications are ready. Use Ticket system → Configure notification emails to add more admins, then deploy this script as a web app.');
+  SpreadsheetApp.getUi().alert('The private ticket sheet, Drive upload folder, and email notifications are ready. New-ticket alerts and customer replies use ' + DEFAULT_ADMIN_NOTIFICATION_EMAIL + '. Manage recipients through the Google Group, then deploy this script as a web app.');
 }
 
 function configureNotificationEmails() {
@@ -650,7 +652,7 @@ function recordPendingStatusEdits_(sheet, firstRow, statuses) {
 }
 
 function notifyAdminsOfNewTicket_(request, ticketNumber, properties, book, deferFlush) {
-  var recipients = parseEmailList_(properties.getProperty('ADMIN_NOTIFICATION_EMAILS') || '');
+  var recipients = parseEmailList_(properties.getProperty('ADMIN_NOTIFICATION_EMAILS') || DEFAULT_ADMIN_NOTIFICATION_EMAIL);
   if (!recipients.length) return false;
   var subject = '[Mandir tickets] New ' + ticketNumber;
   var body = [
@@ -687,9 +689,11 @@ function notifyCustomerOfStatus_(row, status, revision, book, deferFlush) {
   };
   var ticketNumber = String(row[1]);
   var label = labels[status] || status;
+  var adminRecipients = parseEmailList_(PropertiesService.getScriptProperties().getProperty('ADMIN_NOTIFICATION_EMAILS') || DEFAULT_ADMIN_NOTIFICATION_EMAIL);
   enqueueNotification_(book, {
     id: 'status:' + String(row[0]) + ':' + String(revision) + ':' + status,
     to: email,
+    replyTo: adminRecipients[0] || DEFAULT_ADMIN_NOTIFICATION_EMAIL,
     subject: '[Mandir tickets] ' + ticketNumber + ' is ' + label.toLowerCase(),
     body: [
       'Your Mandir workshop ticket ' + ticketNumber + ' was updated.',

@@ -36,6 +36,7 @@ const releaseLock = acquireProcessLock(dataDir);
 process.once('exit', releaseLock);
 const store = await createStore(dataDir);
 const sheets = createSheetsSync(store, { url: process.env.SHEETS_WEBHOOK_URL, secret: process.env.SHEETS_SHARED_SECRET });
+const defaultAdminNotificationEmail = 'demandirtickets@googlegroups.com';
 const notifications = await createNotificationService(dataDir, {
   host: process.env.SMTP_HOST,
   port: process.env.SMTP_PORT,
@@ -43,7 +44,8 @@ const notifications = await createNotificationService(dataDir, {
   user: process.env.SMTP_USER,
   password: process.env.SMTP_PASSWORD,
   from: process.env.NOTIFICATION_FROM,
-  adminEmails: process.env.ADMIN_NOTIFICATION_EMAILS,
+  adminEmails: process.env.ADMIN_NOTIFICATION_EMAILS || defaultAdminNotificationEmail,
+  replyTo: process.env.NOTIFICATION_REPLY_TO || defaultAdminNotificationEmail,
   appUrl: process.env.APP_ORIGIN,
 });
 const enqueueNotification = operation => operation.catch(error => console.error('Could not queue notification:', error.message));

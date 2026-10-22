@@ -142,6 +142,40 @@ test('Apps Script backend requires a valid Drive checksum on every direct-upload
   }), /integrity check/i);
 });
 
+test('setup migrates the legacy admin recipient to the managed group only once', () => {
+  const properties = propertiesStore({
+    SPREADSHEET_ID: 'sheet-id',
+    UPLOAD_FOLDER_ID: 'folder-id',
+    ADMIN_NOTIFICATION_EMAILS: 'legacy-owner@example.com',
+    NOTIFICATION_OUTBOX_STARTED_AT: new Date().toISOString(),
+  });
+  const alerts = [];
+  const book = { getId: () => 'sheet-id' };
+  const isolated = loadContext({
+    PropertiesService: { getScriptProperties: () => properties },
+    SpreadsheetApp: {
+      getActiveSpreadsheet: () => book,
+      getUi: () => ({ alert: message => alerts.push(message) }),
+    },
+  });
+  isolated.ensureTicketSheet_ = () => {};
+  isolated.initializeNotificationStatusMarkers_ = () => {};
+  isolated.ensureNotificationSheet_ = () => {};
+  isolated.installStatusNotificationTrigger_ = () => {};
+  isolated.installNotificationRetryTrigger_ = () => {};
+  isolated.authorizeLargeFileUploads = () => {};
+  isolated.formatTicketSheet = () => {};
+
+  isolated.setupMandirTicketSystem();
+  assert.equal(properties.getProperty('ADMIN_NOTIFICATION_EMAILS'), 'demandirtickets@googlegroups.com');
+  assert.equal(properties.getProperty('ADMIN_NOTIFICATION_DEFAULT_VERSION'), 'google-group-v1');
+  assert.match(alerts[0], /demandirtickets@googlegroups\.com/);
+
+  properties.setProperty('ADMIN_NOTIFICATION_EMAILS', 'replacement-group@example.com');
+  isolated.setupMandirTicketSystem();
+  assert.equal(properties.getProperty('ADMIN_NOTIFICATION_EMAILS'), 'replacement-group@example.com');
+});
+
 test('Apps Script backend rejects invalid dimensions, deadlines, keys, and attachments', () => {
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), email: 'not-an-email' }), /valid email/i);
   for (const email of ['a,b@example.com', 'a<victim@example.com>', 'a\0@example.com']) {
@@ -373,6 +407,7 @@ test('installed status edit handler emails the requester and advances revision m
 
   assert.equal(sent.length, 1);
   assert.equal(sent[0].to, 'requester@example.com');
+  assert.equal(sent[0].replyTo, 'demandirtickets@googlegroups.com');
   assert.match(sent[0].subject, /F-0007.*ready for pickup/i);
   assert.equal(writes.find(write => write.column === 19).value, 4);
   assert.ok(!Number.isNaN(Date.parse(writes.find(write => write.column === 18).value)));

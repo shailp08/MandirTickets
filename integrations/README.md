@@ -8,7 +8,7 @@ This backend makes the GitHub Pages site operational without publishing the spre
 2. In that sheet, choose **Extensions → Apps Script**.
 3. Replace the editor contents with [`google-sheets.gs`](google-sheets.gs) and save it.
 4. Select `setupMandirTicketSystem` in the function menu and click **Run**. Approve access to the current spreadsheet, Google Drive, and email sending. Setup creates the `Tickets` tab, a private Drive folder for attachments, a hidden notification outbox, and installable triggers for status emails and delivery retries.
-5. Reload the spreadsheet, then choose **Ticket system → Configure notification emails**. Enter your address and any other admin addresses that should receive new-ticket alerts, separated by commas.
+5. Reload the spreadsheet. Setup makes the managed Google Group `demandirtickets@googlegroups.com` the notification recipient, including when upgrading an installation that previously defaulted to its owner. Keep it as the single address so group membership controls which admins receive alerts.
 6. Choose **Deploy → New deployment → Web app**.
 7. Set **Execute as** to yourself and **Who has access** to **Anyone**. Deploy and copy the URL ending in `/exec`.
 8. In the GitHub repository, open **Settings → Secrets and variables → Actions → Variables** and create `VITE_GOOGLE_SCRIPT_URL` with the `/exec` URL.
@@ -21,7 +21,7 @@ Never publish the spreadsheet, share the upload folder, commit the deployment UR
 - Open the private **Mandir Workshop Tickets** spreadsheet in Google Drive and use the `Tickets` tab as the staff queue. Do not link the private sheet from the public website.
 - New submissions appear as one row with status `queued`. The most useful staff columns are Queue number (B), Name (D), Purpose (F), Needed by (M), Status (N), and Files (P).
 - Update Status (column N) with its dropdown: `queued`, `in-progress`, `ready`, `collected`, or `cancelled`. The public tracker reflects the change and the customer receives an email at the address stored with the ticket.
-- Use **Ticket system → Configure notification emails** whenever you need to add or remove admins from new-ticket alerts. This setting is private and never sent to the public frontend.
+- Manage admins by adding or removing members in `demandirtickets@googlegroups.com`. Use **Ticket system → Configure notification emails** only if the notification group address itself changes. Customer status emails use the group as their Reply-To address; Apps Script still sends them from the Google account that owns the deployment.
 - Failed emails remain in the hidden notification outbox and retry automatically. Do not rename, edit, or delete that hidden tab.
 - To print the submitted artwork, open its private Drive link in Files (column P), then print or download it from the Drive preview.
 - To print the ticket details, select the cells in that ticket's row, choose **File → Print**, and set **Print** to **Selected cells**. Landscape orientation is usually easiest to read.
