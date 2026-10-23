@@ -445,6 +445,17 @@ test('Apps Script tracker accepts one opaque ticket code and returns only public
   assert.equal(result.ticket.ticketNumber, undefined);
   assert.equal(JSON.stringify(result).includes('Private Person'), false);
   assert.equal(JSON.stringify(result).includes('private@example.com'), false);
+
+  row[1] = 'P-0013';
+  row[2] = 'Poster printing';
+  row[8] = '';
+  row[13] = 'pending-review';
+  row[24] = '';
+  row[25] = '';
+  row[26] = '';
+  const pendingPrint = isolated.trackTicket_({ tracking: 'DM-ABCD2345EFGH' });
+  assert.equal(pendingPrint.ticket.status, 'pending-review');
+  assert.equal(pendingPrint.ticket.costEstimate, null);
   assert.throws(() => isolated.trackTicket_({ tracking: 'F-0012' }), /not found/i);
   assert.throws(() => isolated.trackTicket_({ ticket: 'F-0012', code: 'ABCD2345' }), /not found/i);
   assert.throws(() => isolated.trackTicket_({ tracking: 'ABCD2345EFGH' }), /not found/i);

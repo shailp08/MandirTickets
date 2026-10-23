@@ -108,7 +108,6 @@ Use Node 22 or newer, then from the repository root:
 ```bash
 npm ci
 npm ci --prefix PrintingDashboard
-npm run build:staff
 npm run check
 npm start
 ```

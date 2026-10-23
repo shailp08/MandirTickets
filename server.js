@@ -19,7 +19,11 @@ const dataDir = process.env.DATA_DIR || path.join(here, 'data');
 const uploadDir = path.join(dataDir, 'uploads');
 const legacyUploads = path.join(here, 'uploads');
 const production = process.env.NODE_ENV === 'production';
-const googleMode = Boolean(process.env.WORKSHOP_GOOGLE_SCRIPT_URL);
+const workshopGoogleUrl = String(process.env.WORKSHOP_GOOGLE_SCRIPT_URL || '').trim();
+// Existing installations already have a private Sheets secret. Reuse it during
+// the workshop migration unless a dedicated secret has been configured.
+const workshopGoogleSecret = String(process.env.WORKSHOP_SHARED_SECRET || process.env.SHEETS_SHARED_SECRET || '').trim();
+const googleMode = Boolean(workshopGoogleUrl);
 const scanner = createMalwareScanner(process.env.CLAMSCAN_PATH);
 const requestSite = process.env.PUBLIC_REQUEST_URL || '';
 if (requestSite && !/^https:\/\//.test(requestSite)) throw new Error('PUBLIC_REQUEST_URL must use HTTPS.');
@@ -44,8 +48,8 @@ process.once('exit', releaseLock);
 const pricing = pricingFromEnvironment(process.env);
 const store = await createStore(dataDir, { pricing });
 const sheets = createSheetsSync(store, { url: process.env.SHEETS_WEBHOOK_URL, secret: process.env.SHEETS_SHARED_SECRET });
-const googleWorkshop = process.env.WORKSHOP_GOOGLE_SCRIPT_URL
-  ? createGoogleWorkshop({ url: process.env.WORKSHOP_GOOGLE_SCRIPT_URL, secret: process.env.WORKSHOP_SHARED_SECRET }) : null;
+const googleWorkshop = workshopGoogleUrl
+  ? createGoogleWorkshop({ url: workshopGoogleUrl, secret: workshopGoogleSecret }) : null;
 if (googleWorkshop && process.env.SHEETS_WEBHOOK_URL) throw new Error('Use Google as the source of truth OR a local mirror, never both.');
 const defaultAdminNotificationEmail = 'demandirtickets@googlegroups.com';
 const notifications = await createNotificationService(dataDir, {

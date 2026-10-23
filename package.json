@@ -7,7 +7,7 @@
     "audit:data": "node scripts/audit-data.js",
     "build": "vite build",
     "check": "npm run build && npm test && npm run audit:data",
-    "prestart": "npm run build",
+    "prestart": "npm run build && npm run build:staff",
     "start": "node server.js",
     "dev": "npm run build && node --watch server.js",
     "test": "node --test --test-timeout=30000 test/*.test.js",

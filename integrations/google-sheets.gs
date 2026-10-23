@@ -443,6 +443,9 @@ function trackTicket_(params) {
   var row = sheet.getRange(rowNumber, 1, 1, HEADERS.length).getValues()[0];
   var status = String(row[13] || '').toLowerCase();
   var position = activePosition_(sheet, rowNumber, String(row[2]), status);
+  var costEstimate = null;
+  try { costEstimate = estimateFromRow_(row); }
+  catch (_estimateError) { costEstimate = null; }
   return {
     ok: true,
     ticket: {
@@ -452,7 +455,7 @@ function trackTicket_(params) {
       position: position,
       reason: String(row[30] || ''),
       createdAt: row[16] instanceof Date ? row[16].toISOString() : String(row[16]),
-      costEstimate: estimateFromRow_(row)
+      costEstimate: costEstimate
     }
   };
 }

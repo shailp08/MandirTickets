@@ -33,14 +33,13 @@ Node.js 22 or newer is required.
 npm ci
 npm ci --prefix PrintingDashboard
 cp .env.example .env
-# Set the admin/staff credentials in .env
-npm run build:staff
+# Set the admin/staff credentials and workshop Google settings in .env
 npm start
 ```
 
 Open [http://localhost:3000](http://localhost:3000) for requests and [http://localhost:3000/staff/](http://localhost:3000/staff/) for the protected workshop desk.
 
-`npm start` builds the React client before starting Express. The local server stores records in `data/tickets.json` and files in `data/uploads/` unless `DATA_DIR` points elsewhere.
+`npm start` builds both React clients before starting Express. In workshop Google mode, the private Sheet is the ticket source of truth. Otherwise, the local server stores records in `data/tickets.json` and files in `data/uploads/` unless `DATA_DIR` points elsewhere.
 
 ## Verify the system
 
