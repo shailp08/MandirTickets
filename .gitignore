@@ -5,4 +5,7 @@ data/
 uploads/
 dist/
 artifacts/
+PrintingDashboard/build/
+PrintingDashboard/coverage/
+PrintingDashboard/server/dist/
 .DS_Store

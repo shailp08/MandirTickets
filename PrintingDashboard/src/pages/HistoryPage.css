@@ -1,0 +1,69 @@
+/* PDF export control */
+.pdf-export { display: flex; align-items: center; gap: 8px; }
+.pdf-export select {
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--r-md); color: var(--t1); padding: 0 11px;
+  height: 36px; font-size: 13px; font-family: var(--font); cursor: pointer;
+}
+.pdf-export select:focus { outline: none; border-color: var(--teal); }
+
+.hist-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 20px;
+}
+@media (max-width: 1000px) { .hist-grid { grid-template-columns: 1fr; } }
+
+.chart-wrap { padding: 18px 20px; }
+.chart-box { height: 240px; }
+
+.hist-empty {
+  padding: 32px 20px; text-align: center; color: var(--t3); font-size: 13px;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+}
+.hist-empty i { font-size: 22px; color: var(--teal); }
+
+/* Reorder list */
+.reorder { padding: 8px 0; }
+.reorder-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 20px; border-bottom: 1px solid var(--line);
+}
+.reorder-row:last-child { border-bottom: none; }
+.reorder-ic {
+  width: 32px; height: 32px; border-radius: var(--r-md);
+  display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0;
+}
+.reorder-ic--paper { background: var(--terra-soft); color: var(--terra-light); }
+.reorder-ic--ink { background: var(--teal-soft); color: var(--teal); }
+.reorder-text { flex: 1; min-width: 0; }
+.reorder-name { font-size: 13px; font-weight: 500; color: var(--t1); }
+.reorder-detail { font-size: 11px; color: var(--t3); margin-top: 1px; }
+.reorder-count {
+  font-size: 11px; font-weight: 600; color: var(--amber-light);
+  background: var(--amber-soft); border-radius: 99px; padding: 3px 9px;
+}
+.reorder-count--zero { color: var(--terra-light); background: var(--terra-soft); }
+.reorder-link {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: var(--r-sm);
+  background: var(--surface-2); border: 1px solid var(--line-2);
+  color: var(--teal); font-size: 14px; text-decoration: none; flex-shrink: 0;
+}
+.reorder-link:hover { border-color: rgba(123, 181, 185, 0.4); }
+
+/* Audit log */
+.audit { padding: 4px 0; max-height: 360px; overflow-y: auto; }
+.audit-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 20px; border-bottom: 1px solid var(--line);
+}
+.audit-row:last-child { border-bottom: none; }
+.audit-ic {
+  width: 28px; height: 28px; border-radius: var(--r-sm);
+  background: var(--surface-2); border: 1px solid var(--line);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; color: var(--t2); flex-shrink: 0;
+}
+.audit-text { flex: 1; font-size: 13px; color: var(--t1); min-width: 0; }
+.audit-when { font-size: 11px; color: var(--t3); white-space: nowrap; }

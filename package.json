@@ -10,7 +10,9 @@
     "prestart": "npm run build",
     "start": "node server.js",
     "dev": "npm run build && node --watch server.js",
-    "test": "node --test --test-timeout=30000"
+    "test": "node --test --test-timeout=30000 test/*.test.js",
+    "build:staff": "node scripts/build-staff.js",
+    "test:staff": "CI=true npm --prefix PrintingDashboard test -- --watchAll=false --runInBand"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",

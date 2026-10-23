@@ -1,22 +1,26 @@
 # Delaware Mandir Workshop Tickets
 
-A focused request system for poster printing and foam cutting. The public site opens with one question—what the requester needs—and then shows only the fields required for that job.
+A public request and tracking site for poster printing and foam cutting, paired with a protected staff dashboard at `/staff/`. New requests stay in admin review until their artwork, dimensions, and material are approved for production.
 
 ## What works
 
-- One focused public interface with no marketing, public queue, or staff pages
+- Focused public request form, receipt-protected tracking, and a privacy-limited live queue
+- Protected admin review inbox and staff production dashboard
+- Editable review details, approval and decline decisions, and revision-safe updates
+- Flexible printing and foam-cutting queues with material and waste records
 - Private Google Sheets backend with private Google Drive attachments
 - Receipt-protected ticket tracking with live status and queue position
 - One private customer-facing ticket code instead of separate ticket and tracking numbers
-- Calendar-based needed-by dates and stored approximate material-cost estimates
+- Calendar-based needed-by dates and stored approximate material-cost estimates after material review
 - Separate print and foam-cutting request requirements
 - Streaming uploads with type, structure, signature, count, and size validation
 - Persistent `P-0001` and `F-0001` queue sequences
 - Idempotent submissions that cannot silently create duplicate tickets
 - Password-protected staff API with stale-write protection
-- Queued → In progress → Ready for pickup → Collected workflow
+- Awaiting review → Queued → In progress → Ready for pickup → Collected workflow
 - Cancellation, reopening, and complete status history
 - Email alerts to one or more admins for new tickets and to requesters for status changes
+- Optional Textbee SMS alerts for requesters who explicitly opt in
 - CSV export and optional authenticated Google Sheets replication
 - Atomic local persistence and a single-writer process lock
 - Responsive and keyboard-accessible React request form with reduced-motion support
@@ -27,12 +31,14 @@ Node.js 22 or newer is required.
 
 ```bash
 npm ci
+npm ci --prefix PrintingDashboard
 cp .env.example .env
-# Set ADMIN_PASSWORD in .env
+# Set the admin/staff credentials in .env
+npm run build:staff
 npm start
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open [http://localhost:3000](http://localhost:3000) for requests and [http://localhost:3000/staff/](http://localhost:3000/staff/) for the protected workshop desk.
 
 `npm start` builds the React client before starting Express. The local server stores records in `data/tickets.json` and files in `data/uploads/` unless `DATA_DIR` points elsewhere.
 
@@ -50,6 +56,8 @@ npm audit --omit=dev
 The recommended Pages deployment uses the included Google Apps Script backend. Tickets are written to a private Sheet, attachments are stored in a private Drive folder, and status changes made in the Sheet appear in the public tracker. Tracking requires the single private `DM-…` code printed on the receipt; internal queue numbers, names, departments, contact details, purposes, notes, and files are never returned by the tracker.
 
 Setup instructions are in [integrations/README.md](integrations/README.md). Once the Apps Script web app is deployed, add its `/exec` URL to the GitHub repository variable `VITE_GOOGLE_SCRIPT_URL` and re-run the Pages workflow.
+
+The staff dashboard cannot run on GitHub Pages alone because it requires authenticated server-side access. Follow [docs/workshop-setup.md](docs/workshop-setup.md) for the combined deployment and Google workshop connection.
 
 The original Node backend remains available for controlled local or separately hosted installations. Set `VITE_API_BASE_URL` instead when using it. If neither backend variable is configured, the Pages build clearly identifies itself as a non-saving preview.
 
@@ -81,7 +89,7 @@ The application should be placed behind HTTPS and trusted-network or identity co
 
 ## Data and privacy
 
-The public tracker returns only an opaque ticket code, machine, status, queue position, creation time, and the stored material estimate. Names, internal queue numbers, departments, email addresses, phone numbers, purposes, notes, and files require a staff session. The public queue endpoint returns aggregate counts only.
+The public tracker returns only an opaque ticket code, machine, status, queue position, creation time, and the stored material estimate. Names, departments, email addresses, phone numbers, purposes, notes, and files require a staff session. The public queue shows ticket numbers, statuses, and positions without requester details.
 
 Uploaded PDF and image checks verify safe envelopes, not complete document semantics. SVG and DXF receive restrictive structural validation. Production additionally requires malware scanning. Staff must still verify material, margins, dimensions, geometry, and machine readiness.
 

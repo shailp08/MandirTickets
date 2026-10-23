@@ -1,0 +1,75 @@
+/* Shared styles for Maintenance + Suppliers pages */
+
+.ops-form { padding: 18px; }
+.ops-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 2fr 1fr auto;
+  gap: 14px;
+  align-items: end;
+}
+.vendor-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr) auto;
+  gap: 14px;
+  align-items: end;
+}
+@media (max-width: 1000px) {
+  .ops-form-grid, .vendor-form-grid { grid-template-columns: 1fr 1fr; }
+}
+
+.ops-form .fg { display: flex; flex-direction: column; gap: 7px; }
+.ops-form .fl { font-size: 11px; font-weight: 500; color: var(--t2); }
+.ops-form input, .ops-form select {
+  background: var(--surface-2); border: 1px solid var(--line-2);
+  border-radius: var(--r-md); color: var(--t1);
+  padding: 10px 12px; font-size: 13px; font-family: var(--font);
+}
+.ops-form input:focus, .ops-form select:focus { outline: none; border-color: var(--teal); }
+.vendor-form-grid .btn-primary, .ops-form-grid .btn-primary { height: 40px; }
+
+/* List (maintenance) */
+.ops-list { padding: 4px 0; }
+.ops-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 20px; border-bottom: 1px solid var(--line);
+}
+.ops-row:last-child { border-bottom: none; }
+.ops-ic {
+  width: 32px; height: 32px; border-radius: var(--r-md);
+  background: var(--surface-2); border: 1px solid var(--line);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; color: var(--t2); flex-shrink: 0;
+}
+.ops-text { flex: 1; min-width: 0; }
+.ops-name { font-size: 13px; font-weight: 500; color: var(--t1); }
+.ops-by { color: var(--t3); font-weight: 400; }
+.ops-detail { font-size: 12px; color: var(--t2); margin-top: 2px; }
+.ops-when { font-size: 11px; color: var(--t3); white-space: nowrap; }
+.ops-del {
+  background: none; border: none; color: var(--t3); cursor: pointer;
+  font-size: 15px; padding: 4px; flex-shrink: 0;
+}
+.ops-del:hover { color: var(--terra-light); }
+
+.ops-empty { padding: 28px; text-align: center; color: var(--t3); font-size: 13px; }
+
+/* Vendor cards */
+.vendor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+}
+.vendor-card { display: flex; flex-direction: column; gap: 12px; }
+.vendor-top { display: flex; align-items: flex-start; justify-content: space-between; }
+.vendor-name { font-size: 14px; font-weight: 600; }
+.vendor-supply { font-size: 11px; color: var(--teal); margin-top: 2px; }
+.vendor-meta { display: flex; flex-direction: column; gap: 6px; }
+.vendor-meta div { font-size: 12px; color: var(--t2); display: flex; align-items: center; gap: 7px; }
+.vendor-meta i { color: var(--t3); font-size: 14px; }
+.vendor-reorder {
+  display: inline-flex; align-items: center; gap: 6px; align-self: flex-start;
+  font-size: 12px; font-weight: 500; color: var(--terra-light);
+  background: var(--terra-soft); border: 1px solid rgba(194, 72, 61, 0.25);
+  border-radius: var(--r-md); padding: 7px 12px; text-decoration: none;
+}
+.vendor-reorder:hover { background: rgba(194, 72, 61, 0.2); }

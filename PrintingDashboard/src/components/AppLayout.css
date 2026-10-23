@@ -1,0 +1,122 @@
+.app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.shell {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+/* ---- Shared page primitives (used by all screens) ---- */
+.page-header {
+  padding: 22px 28px 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.page-title { font-size: 21px; font-weight: 600; letter-spacing: -0.02em; }
+.page-sub { font-size: 13px; color: var(--t2); margin-top: 3px; }
+.page-actions { display: flex; align-items: center; gap: 9px; }
+
+.page-content {
+  padding: 22px 28px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* Buttons */
+.btn-ghost {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--t2);
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+  padding: 9px 14px;
+  cursor: pointer;
+  font-family: var(--font);
+  transition: color 0.12s, border-color 0.12s;
+}
+.btn-ghost:hover { color: var(--t1); border-color: var(--t3); }
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--terra);
+  color: #fff;
+  border: none;
+  border-radius: var(--r-md);
+  padding: 10px 16px;
+  cursor: pointer;
+  font-family: var(--font);
+  box-shadow: 0 2px 8px rgba(194, 72, 61, 0.3);
+  transition: background 0.12s;
+}
+.btn-primary:hover { background: #d15247; }
+
+/* Panel + card primitives */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 17px;
+  box-shadow: var(--shadow);
+}
+.card--alert { border-color: rgba(194, 72, 61, 0.3); }
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 13px;
+}
+.section-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.section-title i { font-size: 17px; color: var(--t3); }
+
+/* Empty/placeholder state for unbuilt screens */
+.placeholder {
+  margin: 40px 28px;
+  border: 1px dashed var(--line-2);
+  border-radius: var(--r-lg);
+  padding: 48px;
+  text-align: center;
+  color: var(--t3);
+}
+.placeholder i { font-size: 30px; display: block; margin-bottom: 12px; color: var(--t3); }
+.placeholder h2 { font-size: 16px; font-weight: 600; color: var(--t2); margin: 0 0 6px; }
+.placeholder p { font-size: 13px; margin: 0; }

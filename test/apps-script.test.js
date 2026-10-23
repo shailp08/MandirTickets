@@ -117,7 +117,7 @@ test('Apps Script rejects unsafe pricing totals and recognizes the legacy printe
   const unsafeProperties = propertiesStore({ COST_PRINT_INK_CENTS_PER_SQFT: String(Number.MAX_SAFE_INTEGER) });
   const unsafeContext = loadContext({ PropertiesService: { getScriptProperties: () => unsafeProperties } });
   assert.throws(() => unsafeContext.pricingConfig_(), /safe.*cents/i);
-  const row = Array(27).fill('');
+  const row = Array(31).fill('');
   row[2] = '24-inch roll printer';
   row[7] = 1;
   row[8] = 'Standard';
@@ -404,6 +404,8 @@ test('duplicate createTicket requests write one Sheet row and reuse the first ti
   assert.equal(duplicate.ok, true);
   assert.equal(duplicate.duplicate, true);
   assert.equal(writtenRows.length, 1);
+  assert.equal(writtenRows[0][13], 'pending-review');
+  assert.equal(writtenRows[0].length, 31);
   assert.equal(fileSaves, 1);
   assert.equal(dailyIncrements, 1);
   assert.equal(emails.length, 1);
@@ -415,7 +417,7 @@ test('duplicate createTicket requests write one Sheet row and reuse the first ti
 });
 
 test('Apps Script tracker accepts one opaque ticket code and returns only public fields', () => {
-  const row = Array(27).fill('');
+  const row = Array(31).fill('');
   row[0] = 'private-ticket-id';
   row[1] = 'F-0012';
   row[2] = 'Foam cutting';
@@ -494,7 +496,7 @@ test('installed status edit handler emails the requester and advances revision m
     hasLock() { return this.locked; },
     releaseLock() { this.locked = false; },
   };
-  const row = Array(27).fill('');
+  const row = Array(31).fill('');
   row[1] = 'F-0007';
   row[2] = 'Foam cutting';
   row[13] = 'ready';
@@ -508,7 +510,7 @@ test('installed status edit handler emails the requester and advances revision m
   const sheet = {
     getName: () => 'Tickets',
     getRange(_row, column, _rows, columns) {
-      if (column === 1 && columns === 27) return { getValues: () => [row] };
+      if (column === 1 && columns === 31) return { getValues: () => [row] };
       return { setValue: value => writes.push({ column, value }) };
     },
   };
@@ -550,7 +552,7 @@ test('installed status edit handler notifies every requester in a bulk status ed
     releaseLock() { this.locked = false; },
   };
   const rows = [2, 3].map((rowNumber, index) => {
-    const row = Array(27).fill('');
+    const row = Array(31).fill('');
     row[0] = `ticket-${rowNumber}`;
     row[1] = `F-000${rowNumber}`;
     row[2] = 'Foam cutting';
@@ -563,7 +565,7 @@ test('installed status edit handler notifies every requester in a bulk status ed
   const sheet = {
     getName: () => 'Tickets',
     getRange(rowNumber, column, _rowCount, columns) {
-      if (column === 1 && columns === 27) return { getValues: () => [rows[rowNumber - 2]] };
+      if (column === 1 && columns === 31) return { getValues: () => [rows[rowNumber - 2]] };
       return { setValue: value => writes.push({ rowNumber, column, value }) };
     },
   };
@@ -601,7 +603,7 @@ test('bulk status edits do not notify or revise rows already at that status', ()
     releaseLock() { this.locked = false; },
   };
   const rows = [2, 3].map(rowNumber => {
-    const row = Array(27).fill('');
+    const row = Array(31).fill('');
     row[0] = `ticket-${rowNumber}`;
     row[1] = `F-000${rowNumber}`;
     row[2] = 'Foam cutting';
@@ -614,7 +616,7 @@ test('bulk status edits do not notify or revise rows already at that status', ()
   const sheet = {
     getName: () => 'Tickets',
     getRange(rowNumber, column, _rowCount, columns) {
-      if (column === 1 && columns === 27) return { getValues: () => [rows[rowNumber - 2]] };
+      if (column === 1 && columns === 31) return { getValues: () => [rows[rowNumber - 2]] };
       return { setValue: value => writes.push({ rowNumber, column, value }) };
     },
   };
@@ -667,7 +669,7 @@ test('Apps Script persists failed admin and customer notifications and retries t
   const estimate = isolated.estimateTicketCost_(baseTicket(), isolated.DEFAULT_PRICING);
   const adminTicket = { ...baseTicket(), trackingNumber: 'DM-ABCD2345EFGH', costEstimate: estimate };
   assert.equal(isolated.notifyAdminsOfNewTicket_(adminTicket, 'F-0008', properties, outbox.book), true);
-  const customerRow = Array(27).fill('');
+  const customerRow = Array(31).fill('');
   customerRow[0] = 'ticket-id';
   customerRow[1] = 'F-0008';
   customerRow[2] = 'Foam cutting';
@@ -707,7 +709,7 @@ test('periodic reconciliation recovers notifications missed by a status-edit loc
     ADMIN_NOTIFICATION_EMAILS: 'owner@example.com',
     NOTIFICATION_OUTBOX_STARTED_AT: '2024-01-01T00:00:00.000Z',
   });
-  const ticket = Array(27).fill('');
+  const ticket = Array(31).fill('');
   ticket[0] = 'ticket-id';
   ticket[1] = 'F-0099';
   ticket[2] = 'Foam cutting';
@@ -726,7 +728,7 @@ test('periodic reconciliation recovers notifications missed by a status-edit loc
   const ticketSheet = {
     getLastRow: () => 2,
     getRange(_row, column, _rowCount, columns) {
-      if (column === 1 && columns === 27) return { getValues: () => [ticket] };
+      if (column === 1 && columns === 31) return { getValues: () => [ticket] };
       return { setValue: value => { ticket[column - 1] = value; metadataWrites.push({ column, value }); } };
     },
   };
@@ -781,7 +783,7 @@ test('notification reconciliation isolates an invalid legacy recipient and conti
     NOTIFICATION_OUTBOX_STARTED_AT: '2024-01-01T00:00:00.000Z',
   });
   const tickets = ['not-an-email', 'valid@example.com'].map((email, index) => {
-    const row = Array(27).fill('');
+    const row = Array(31).fill('');
     row[0] = `ticket-${index + 1}`;
     row[1] = `F-010${index}`;
     row[2] = 'Foam cutting';
@@ -796,7 +798,7 @@ test('notification reconciliation isolates an invalid legacy recipient and conti
   const ticketSheet = {
     getLastRow: () => 3,
     getRange(rowNumber, column, _rowCount, columns) {
-      if (rowNumber === 2 && column === 1 && columns === 27) return { getValues: () => tickets };
+      if (rowNumber === 2 && column === 1 && columns === 31) return { getValues: () => tickets };
       return { setValue: value => { tickets[rowNumber - 2][column - 1] = value; } };
     },
   };
@@ -832,7 +834,7 @@ test('pending status recovery isolates an invalid legacy recipient and continues
     getLastRow: () => 3,
     getRange(rowNumber, column, _rowCount, columns) {
       const row = [...tickets.values()][rowNumber - 2];
-      if (column === 1 && columns === 27) return { getValues: () => [row] };
+      if (column === 1 && columns === 31) return { getValues: () => [row] };
       return { setValue: value => { row[column - 1] = value; } };
     },
   };

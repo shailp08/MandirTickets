@@ -5,7 +5,7 @@ const root = path.resolve(process.cwd());
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(root, 'data'));
 const ticketFile = path.join(dataDir, 'tickets.json');
 const uploadDirs = [path.join(dataDir, 'uploads'), path.join(root, 'uploads')];
-const statuses = new Set(['queued', 'in-progress', 'ready', 'collected', 'cancelled']);
+const statuses = new Set(['pending-review', 'declined', 'queued', 'in-progress', 'ready', 'collected', 'cancelled']);
 const machines = new Set(['printer', 'foam']);
 const errors = [];
 const warnings = [];
@@ -48,7 +48,8 @@ for (const [index, ticket] of tickets.entries()) {
   else if (typeof ticket.trackingNumber !== 'string' || !/^DM-[A-HJ-NP-Z2-9]{12}$/.test(ticket.trackingNumber)) errors.push(`${label} has an invalid ticket code.`);
   else if (seenTrackingNumbers.has(ticket.trackingNumber)) errors.push(`${label} duplicates a ticket code.`);
   else seenTrackingNumbers.add(ticket.trackingNumber);
-  if (ticket.costEstimate === undefined || ticket.costEstimate === null) warnings.push(`${label} will receive a material estimate during the next server migration.`);
+  const estimatePendingAdminMaterial = ticket.machine === 'printer' && !ticket.paperType;
+  if ((ticket.costEstimate === undefined || ticket.costEstimate === null) && !estimatePendingAdminMaterial) warnings.push(`${label} will receive a material estimate during the next server migration.`);
   else if (!Number.isSafeInteger(ticket.costEstimate.amountCents) || ticket.costEstimate.amountCents < 0
     || typeof ticket.costEstimate.amountDisplay !== 'string' || typeof ticket.costEstimate.basis !== 'string'
     || typeof ticket.costEstimate.version !== 'string') errors.push(`${label} has an invalid material estimate.`);

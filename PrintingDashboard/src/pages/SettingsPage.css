@@ -1,0 +1,58 @@
+/* Language toggle */
+.lang-toggle { display: flex; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.lang-btn {
+  font-size: 12px; font-weight: 500; color: var(--t3); padding: 5px 14px;
+  border-radius: 6px; cursor: pointer; background: none; border: none; font-family: var(--font);
+}
+.lang-btn--on { background: var(--elevated); color: var(--t1); }
+
+.conn-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+@media (max-width: 900px) { .conn-grid { grid-template-columns: 1fr; } }
+
+.conn-top { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; }
+.conn-ic {
+  width: 34px; height: 34px; border-radius: var(--r-md);
+  background: var(--surface-2); border: 1px solid var(--line);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; color: var(--t2);
+}
+.conn-dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 4px; }
+.conn-dot--ok { background: var(--teal); box-shadow: 0 0 0 3px var(--teal-soft); }
+.conn-dot--warn { background: var(--amber); box-shadow: 0 0 0 3px var(--amber-soft); }
+.conn-dot--down { background: var(--terra); box-shadow: 0 0 0 3px var(--terra-soft); }
+.conn-dot--checking { background: var(--t3); }
+
+.conn-title { font-size: 14px; font-weight: 600; }
+.conn-status { font-size: 12px; font-weight: 500; margin: 2px 0 12px; }
+.conn-status--ok { color: var(--teal); }
+.conn-status--warn { color: var(--amber-light); }
+.conn-status--down { color: var(--terra-light); }
+.conn-status--checking { color: var(--t3); }
+
+.conn-line { font-size: 11px; color: var(--t3); line-height: 1.6; word-break: break-all; }
+.conn-line--mono { font-family: var(--font); color: var(--t2); }
+
+/* Config rows */
+.cfg { padding: 4px 4px; }
+.cfg-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 14px; border-bottom: 1px solid var(--line);
+}
+.cfg-row:last-child { border-bottom: none; }
+.cfg-label { font-size: 13px; color: var(--t2); }
+.cfg-value { font-size: 13px; color: var(--t1); font-weight: 500; text-align: right; word-break: break-all; }
+
+.cfg-row--edit { gap: 16px; }
+.cfg-edit-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cfg-hint { font-size: 11px; color: var(--t3); }
+.cfg-input {
+  width: 96px; flex-shrink: 0;
+  background: var(--surface-2); border: 1px solid var(--line-2);
+  border-radius: var(--r-md); color: var(--t1);
+  padding: 8px 10px; font-size: 13px; font-family: var(--font); text-align: right;
+}
+.cfg-input:focus { outline: none; border-color: var(--teal); }

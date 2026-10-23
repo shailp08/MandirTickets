@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import QueueBoard from './QueueBoard.jsx';
 import { createSheetsTicket, trackSheetsTicket, validateSheetsFiles } from './sheets-api.js';
 
 const MACHINES = {
@@ -15,12 +16,10 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, ''
 const SHEETS_API_URL = (import.meta.env.VITE_GOOGLE_SCRIPT_URL || '').replace(/\/$/, '');
 const apiUrl = path => `${API_BASE_URL}${path}`;
 const staticPreview = location.hostname.endsWith('.github.io') && !API_BASE_URL && !SHEETS_API_URL;
-const todayForDateInput = () => {
-  const now = new Date();
-  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
-};
 
 const STATUS_LABELS = {
+  'pending-review': 'Awaiting review',
+  declined: 'Declined',
   queued: 'Waiting',
   'in-progress': 'Being made',
   ready: 'Ready for pickup',
@@ -55,7 +54,10 @@ function Header() {
         <strong>Delaware Mandir</strong>
         <span>Workshop tickets</span>
       </a>
-      <a className="header-note" data-nav-entry href="#tracker">Track a ticket</a>
+      <nav className="header-links">
+        <a className="header-note" data-nav-entry href="#queue">View queue</a>
+        <a className="header-note" data-nav-entry href="#tracker">Track a ticket</a>
+      </nav>
     </header>
   );
 }
@@ -214,12 +216,12 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
     return (
       <section className="receipt-card" id="ticket-receipt" tabIndex="-1" aria-labelledby="receipt-title">
         <h2 id="receipt-title">Ticket submitted</h2>
-        <p>Your request was sent.</p>
+        <p>Your request is awaiting an admin review before it enters the production queue.</p>
         <p className="receipt-label">Ticket code</p>
         <strong className="receipt-number receipt-code">{ticket.trackingNumber || ticket.trackingCode || ticket.ticketNumber}</strong>
         <p>{machineName(ticket)} · {ticket.department}{ticket.position ? ` · Number in line ${ticket.position}` : ''}</p>
         <CostEstimate estimate={ticket.costEstimate} />
-        <p className="receipt-help"><strong>Write down or print this code.</strong> You will need it to check progress and collect the finished job.</p>
+        <p className="receipt-help"><strong>Write down or print this code.</strong> You will need it to check the review, follow progress, and collect the finished job.</p>
         <div className="receipt-actions">
           <button className="button button-secondary" type="button" onClick={() => window.print()}>Print this page</button>
           <a className="button button-secondary" href="#tracker">Track this ticket</a>
@@ -248,24 +250,23 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
             <label>Department or group <span>Required</span><input name="department" required maxLength="100" placeholder="Example: Events or Youth" /></label>
             <label>Email address <span>Required</span><input name="email" type="email" autoComplete="email" required maxLength="254" placeholder="name@example.com" /></label>
             <label>Phone number <span>Optional</span><input name="phone" type="tel" autoComplete="tel" maxLength="40" /></label>
+            <label className="field-full sms-consent"><input type="checkbox" name="smsConsent" value="true" /> Text me when this request is ready, declined, or cancelled. Message and data rates may apply.</label>
             <label className="field-full">What is this for? <span>Required</span><textarea name="purpose" required maxLength="2000" rows="4" placeholder="Example: A welcome sign for the Diwali event" /></label>
-            <label>Date needed <span>Required</span><input name="neededBy" type="date" min={todayForDateInput()} required /><small className="input-help">Choose the date you need the finished job.</small></label>
+            <label>When is it needed? <span>Required</span><select name="neededBy" defaultValue="No rush" required><option>Today</option><option>Tomorrow</option><option>This week</option><option>No rush</option></select><small className="input-help">Choose the closest deadline; an admin will confirm timing.</small></label>
           </div>
         </fieldset>
 
         <fieldset className="form-card">
           <legend>Job details</legend>
           <div className="field-grid details-grid">
-            {machine === 'printer' ? (
-              <label>Print material <span>Required</span><select name="paperType" defaultValue="Standard" required><option value="Polypropylene">Durable poster material</option><option value="Adhesive">Sticker material</option><option value="Canvas">Canvas</option><option value="Glossy">Glossy photo paper</option><option value="Standard">Standard poster paper</option></select></label>
-            ) : (
+            {machine === 'foam' && (
               <label>Foam thickness <span>Required</span><select name="thickness" defaultValue="" required><option value="" disabled>Choose a thickness</option><option value="1">1 inch</option><option value="2">2 inches</option></select></label>
             )}
             <label>How many? <span>Required</span><input name="quantity" type="number" min="1" max="10000" step="1" defaultValue="1" required /></label>
             <label>Finished width in inches <span>Required</span><input name="width" type="number" min="0.01" max={machine === 'printer' ? '24' : '10000'} step="any" placeholder={machine === 'printer' ? 'Example: 24' : 'Example: 20'} required /></label>
             <label>Finished length in inches <span>Required</span><input name="length" type="number" min="0.01" max="100000" step="any" placeholder="Example: 36" required /></label>
           </div>
-          <p className="field-help">{machine === 'printer' ? 'The widest print we can make is 24 inches.' : 'Enter the final size. Add a drawing or example file if you have one.'}</p>
+          <p className="field-help">{machine === 'printer' ? 'The widest print we can make is 24 inches. An admin will review the artwork and choose the print material.' : 'Enter the final size. Add a drawing or example file if you have one.'}</p>
 
           <label className="upload-label" htmlFor="artwork-files">Artwork or example files <span>{machine === 'printer' ? 'Required' : 'Optional'}</span></label>
           <div className="file-picker">
@@ -285,7 +286,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
         </fieldset>
 
         <div className="submit-area">
-          <p>After you submit, we will give you a ticket code. Work time depends on staff and material availability.</p>
+          <p>After you submit, an admin reviews the request before it enters the workshop queue. Approved jobs normally follow submission order, but staff may group jobs by material or machine setup.</p>
           <button className="button button-primary submit-button" type="submit" disabled={submitting}>{submitting ? 'Submitting ticket…' : canRetry ? 'Try submitting again' : 'Submit ticket'}</button>
         </div>
         {submitting && <progress max="100" value={progress} aria-label={`Upload progress: ${progress}%`} />}
@@ -346,7 +347,7 @@ function TicketTracker({ recentTicket }) {
       {result && (
         <div className="tracker-result" role="status" aria-live="polite">
           <span className={`status-dot status-${result.status}`} aria-hidden="true" />
-          <div><small>{result.trackingNumber || result.trackingCode || result.ticketNumber}</small><strong>{STATUS_LABELS[result.status] || result.status}</strong><p>{machineName(result)}{result.position ? ` · Number in line ${result.position}` : ''}</p><CostEstimate estimate={result.costEstimate} /></div>
+          <div><small>{result.trackingNumber || result.trackingCode || result.ticketNumber}</small><strong>{STATUS_LABELS[result.status] || result.status}</strong>{result.reason && <p>{result.reason}</p>}{result.status === 'pending-review' && <p>This request has not entered the production queue yet.</p>}<p>{machineName(result)}{result.position ? ` · Number in line ${result.position}` : ''}</p><CostEstimate estimate={result.costEstimate} /></div>
         </div>
       )}
     </section>
@@ -375,6 +376,7 @@ function App() {
       <main id="main" tabIndex="-1">
         {!machine && <MachineChoice value={machine} onChange={chooseMachine} />}
         {machine && <div id="ticket-form"><TicketForm machine={machine} onChangeMachine={chooseMachine} onTicket={setRecentTicket} /></div>}
+        <QueueBoard apiBase={API_BASE_URL} sheetsUrl={SHEETS_API_URL} preview={staticPreview} recentTicket={recentTicket} />
         <TicketTracker recentTicket={recentTicket} />
       </main>
     </div>

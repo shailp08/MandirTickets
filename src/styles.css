@@ -176,6 +176,12 @@ a {
   text-decoration-color: var(--accent);
 }
 
+.header-links {
+  display: flex;
+  align-items: center;
+  gap: clamp(12px, 2vw, 28px);
+}
+
 .deployment-banner {
   display: grid;
   gap: 2px;
@@ -735,6 +741,128 @@ progress {
   margin-top: 30px;
 }
 
+.sms-consent {
+  display: flex !important;
+  align-items: flex-start;
+  gap: 12px;
+  font-weight: 500 !important;
+}
+
+.sms-consent input {
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  margin: 3px 0 0;
+}
+
+.queue-board {
+  display: grid;
+  gap: 20px;
+  padding: clamp(3.5rem, 8vw, 8rem) var(--margin);
+  scroll-margin-top: 0;
+  background: var(--surface);
+}
+
+.queue-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.queue-heading h2 {
+  max-width: 14ch;
+  font-size: var(--step-head);
+}
+
+.queue-heading .eyebrow {
+  margin-bottom: 12px;
+  font-size: var(--step-small);
+  font-weight: 850;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.queue-board > p {
+  color: var(--muted);
+}
+
+.queue-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.queue-tabs button {
+  min-height: 50px;
+  padding: 10px 16px;
+  border: 2px solid var(--ink);
+  background: transparent;
+  color: var(--ink);
+  font-weight: 750;
+}
+
+.queue-tabs button[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--surface);
+}
+
+.queue-tabs span {
+  margin-left: 10px;
+  color: var(--accent);
+}
+
+.queue-summary {
+  max-width: none;
+  margin: 8px 0 0;
+}
+
+.public-queue {
+  max-height: 480px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  border-block: 2px solid var(--ink);
+  list-style: none;
+}
+
+.public-queue li {
+  display: grid;
+  grid-template-columns: 54px minmax(110px, 0.8fr) minmax(130px, 1fr) minmax(180px, 1.5fr);
+  gap: 16px;
+  align-items: center;
+  padding: 16px 8px;
+  border-top: 1px solid var(--control-line);
+}
+
+.public-queue li:first-child {
+  border-top: 0;
+}
+
+.public-queue .your-ticket {
+  background: var(--accent-soft);
+}
+
+.queue-position,
+.queue-ticket-info {
+  font-variant-numeric: tabular-nums;
+}
+
+.queue-position {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.queue-board > small {
+  color: var(--muted);
+}
+
+.queue-empty {
+  padding: 28px 0;
+  border-block: 2px solid var(--ink);
+}
+
 .tracker-section {
   min-height: 72svh;
   display: grid;
@@ -806,6 +934,14 @@ progress {
 
 .status-cancelled {
   background: var(--danger);
+}
+
+.status-pending-review {
+  background: #c89039;
+}
+
+.status-declined {
+  background: #ac5347;
 }
 
 .tracker-result div {
@@ -974,6 +1110,10 @@ progress {
     font-size: 14px;
   }
 
+  .header-links {
+    gap: 12px;
+  }
+
   .hero-copy {
     min-height: 50svh;
   }
@@ -1032,6 +1172,20 @@ progress {
     padding-block: 64px;
   }
 
+  .queue-heading {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .public-queue li {
+    grid-template-columns: 30px 1fr 1fr;
+    gap: 8px;
+  }
+
+  .public-queue li > span:last-child {
+    grid-column: 2 / -1;
+  }
+
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1051,6 +1205,7 @@ progress {
   .change-machine,
   .receipt-actions,
   .tracker-section,
+  .queue-board,
   .deployment-banner {
     display: none !important;
   }

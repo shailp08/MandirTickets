@@ -1,0 +1,130 @@
+# Delaware Mandir workshop — setup and rollout
+
+The public site and staff dashboard are integrated in this repository. The live GitHub Pages site and its Google Apps Script deployment have **not** been changed.
+
+## Workflow
+
+1. A requester submits printing or foam details and artwork. The receipt says **Awaiting admin review**. The public queue and private tracker show **In Review** until approval, without a production position. No paper-material selector appears on the public form.
+2. An admin signs in and opens **Admin review**. They can open artwork, correct requester/contact information, department, purpose, requested timing, quantity, dimensions, foam thickness, notes, request type, and artwork attachments. Corrected files can be linked from the private workshop Google Drive folder. Local attachments can be renamed or removed. The admin chooses paper for printing.
+3. The admin saves corrections, approves for production, or declines with a reason. Approval requires a paper choice for printing. The interface also requires confirmation that artwork, sizes, quantity, and material were checked. Edits and decisions are recorded in history; concurrent edits cannot overwrite a newer revision.
+4. Approved requests enter the staff printing or foam queue. Submission time provides the default order, but staff can start any approved job, including several jobs being worked on. Positions are advisory, not promised completion times.
+5. Staff record actual material used and waste, then mark ready for pickup, collected, or cancelled. Cancellation requires a reason. Material history is retained.
+6. Requesters who opt in receive a Textbee notification when ready, declined, or cancelled. Private tracking shows the current status and review/cancellation reason. The public queue shows ticket numbers, statuses, and positions; names, phone numbers, artwork, and review reasons remain private.
+
+The workflow does not send commands to the printer or foam cutter. Trained volunteers operate the machines. Material totals measure recorded consumption, not remaining inventory, ink levels, or automatic machine telemetry.
+
+## Accounts
+
+Configure the **admin** and **workshop** accounts in the server’s private environment. Automated tests verify the separate roles and permissions. Passwords are excluded from this guide, source control, and frontend builds.
+
+Both accounts use `/staff/`. The admin account opens the review workspace and can also use production tools. The workshop account can only access approved production tickets, files, and material records. Admin endpoints enforce permission checks on the server. The typed volunteer name is a history label, not an individually verified account identity.
+
+On a new host, enter the same credentials in the host’s private environment settings. The archive intentionally does not contain them.
+
+## Textbee free tier
+
+As checked on October 23, 2026, Textbee’s free plan allows **50 messages per day and 300 per month**, including received messages, on one Android device. It uses that device’s SIM number. It does not provide a free sender number or mobile plan.
+
+Use a **dedicated mandir Android phone and SIM**, so no volunteer’s personal number is used. The phone needs power, an internet connection, permission to run Textbee in the background, and an active SMS-capable SIM plan. Confirm the current allowance in the Textbee account before the Diwali rush.
+
+1. Create/verify the mandir’s Textbee account and install the official app on its Android phone.
+2. Pair the phone and enable sending. Record the device ID and create an API key.
+3. Put `TEXTBEE_API_KEY` and `TEXTBEE_DEVICE_ID` in the **private server environment**, never in the public React app or Google Sheet. No secret needs to be pasted into this chat.
+4. Keep a persistent disk mounted at `DATA_DIR`; run one server instance. `notifications.json` is the durable send journal and must survive restarts and deployments. Back it up along with other server data. Losing this journal can resend previously processed notification events.
+5. Send a live test only to a consenting coordinator’s number and confirm both the phone and Textbee dashboard show the expected outcome. This live delivery test has not been performed.
+
+The app uses Textbee’s authenticated `POST /api/v1/gateway/send-sms` endpoint and always specifies the dedicated device ID. It normalizes US numbers and accepts international numbers with country codes. Opt-in is optional; legacy requests are not opted in automatically.
+
+A Textbee acceptance is labeled **delivery unconfirmed**, not delivered. The Textbee dashboard is the place to check carrier delivery and incoming replies; this version does not synchronize delivery webhooks or replies. Rejected sends, including free-tier limits, remain visible on the ticket and can be retried after the cause is fixed. Timeouts and interrupted sends are marked **unknown** and are not automatically retried, to avoid duplicates. Check Textbee before following up manually. Notifications awaiting configuration are retained; obsolete pickup messages are skipped if the ticket has already moved on.
+
+Sources: [Free plan](https://textbee.dev/free-sms-api), [Setup requirements](https://textbee.dev/docs/getting-started), [Sending API and response semantics](https://textbee.dev/docs/sending-sms/sending-sms).
+
+## Existing live system
+
+Public site: [MandirTickets](https://shailp08.github.io/MandirTickets/).
+
+Existing Apps Script deployment:
+
+```
+https://script.google.com/macros/s/AKfycbwpy_peP9T_gYF6blc1EnCvVn-TqvFhXHgiW_d9s5c4sDLx61U56ANTLTawZUQ0ic8p/exec
+```
+
+The existing read-only health check succeeded earlier. The new admin/staff endpoints still require deployment. No live tickets were created or changed during development.
+
+To find the editor, open the ticket Google Sheet and choose **Extensions → Apps Script**. If the Sheet is owned by someone else, its owner must provide access or apply the update. The public deployment URL does not grant editor access.
+
+## Rollout order
+
+1. Back up the ticket Sheet and existing Apps Script source; retain the previous deployment version for rollback.
+2. Replace the existing ticket script with `MandirTickets/integrations/google-sheets.gs`. Preserve existing Script Properties, Sheet ID, upload-folder ID, and allowed upload origins. **Do not run new-system setup or create a replacement Sheet.**
+3. Add a Script Property `WORKSHOP_SHARED_SECRET` containing a random value of at least 32 characters. Put the same value in the staff server’s private environment. This is separate from login passwords and Textbee credentials.
+4. Publish a new version of the **existing deployment**, keeping its `/exec` URL. The script extends the original 22 columns with Material usage, Staff history, SMS consent, and Review reason. Existing receipt codes, IDs, timestamps, and Drive links are preserved.
+5. Before opening the staff desk, run `holdUnreviewedQueueForAdminReview` from the script editor if the existing queued backlog has not already been approved. It moves only unstarted queued requests without an approval history into review. Active, ready, collected, and cancelled work is preserved. It is safe to rerun without duplicating these holds. Direct Sheet changes bypass application review and revision controls; use the app afterward.
+6. Deploy the private server over HTTPS with a persistent data disk and the settings below. Serve the dashboard and API together. GitHub Pages cannot run this private server.
+7. Deploy the updated public MandirTickets frontend through its existing GitHub Pages workflow, retaining `VITE_GOOGLE_SCRIPT_URL`. Update Apps Script first so public submissions enter review and accept the new form without requester-selected paper.
+8. Verify a clearly labeled real request for each machine with the coordinator: submit, track awaiting review, edit/approve, verify staff visibility, start, log material, mark ready, confirm Textbee delivery, collect. Also test decline with a private reason and confirm the staff account cannot open the admin inbox.
+
+Google Drive artwork remains private. Give authorized admins/staff access to the existing workshop folder; the app does not make files public.
+
+## Hosting configuration
+
+Use the host’s private environment settings:
+
+```dotenv
+NODE_ENV=production
+HOST=0.0.0.0
+PORT=3000
+APP_ORIGIN=https://YOUR-STAFF-HOST
+COOKIE_SECURE=true
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=SET-PRIVATELY
+STAFF_USERNAME=workshop
+STAFF_PASSWORD=SET-PRIVATELY
+WORKSHOP_GOOGLE_SCRIPT_URL=THE-EXISTING-EXEC-URL
+WORKSHOP_SHARED_SECRET=THE-SAME-VALUE-AS-SCRIPT-PROPERTIES
+PUBLIC_REQUEST_URL=https://shailp08.github.io/MandirTickets/
+TEXTBEE_API_KEY=SET-PRIVATELY
+TEXTBEE_DEVICE_ID=YOUR-DEDICATED-PHONE-ID
+DATA_DIR=/app/data
+SHEETS_WEBHOOK_URL=
+SHEETS_SHARED_SECRET=
+```
+
+Mount durable storage at `/app/data` with write access for the application user. Keep one server instance. Sessions last eight hours and are cleared on restart. The Google Sheet remains the source of truth for tickets, review history, and material usage; local durable storage keeps the SMS send journal. Google failures never create a replacement local production queue.
+
+The repository contains the public app at its root and the staff app in `PrintingDashboard/`. From the repository root:
+
+```bash
+cp deploy/dockerignore .dockerignore
+docker build -f deploy/Dockerfile -t mandir-workshop .
+```
+
+The Dockerfile is prepared but has not been built here. The application builds were verified directly. No hosting account has been created or charged, and no live deployment has been performed.
+
+## Local checks
+
+Use Node 22 or newer, then from the repository root:
+
+```bash
+npm ci
+npm ci --prefix PrintingDashboard
+npm run build:staff
+npm run check
+npm start
+```
+
+For a separate local test database, leave `WORKSHOP_GOOGLE_SCRIPT_URL`, `SHEETS_WEBHOOK_URL`, and Textbee credentials blank; set `HOST=127.0.0.1` and point `DATA_DIR` to a test directory. Open `http://localhost:3000/` and `/staff/`. Local mode is for development, not a replacement for the live Google system. Local-upload production mode additionally requires the existing ClamAV configuration.
+
+Dashboard tests, from the repository root:
+
+```bash
+npm run test:staff
+```
+
+## Verification
+
+Both production builds passed. The backend suite passed 96 tests and the dashboard/library suite passed 190 tests. Checks cover approval gating, admin/staff authorization, editable fields, stale revisions, file-path restrictions, flexible production ordering, privacy, upload validation, material-entry retries, and Textbee acceptance, rejection, restart recovery, and duplicate-send prevention. The existing local-data audit passed.
+
+Browser checks used a separate empty database and confirmed that the public request/queue interface and private staff login render from the combined server. Sample data and credentials are excluded from the repository. Existing Create React App maintenance warnings remain; builds and tests pass.
+
+Still needed for launch: access to the existing Apps Script editor, an online host with persistent storage, and the dedicated Textbee phone/SIM/account connection.
