@@ -1,4 +1,4 @@
-// Mandir Workshop Tickets — Google Sheets + Drive backend for GitHub Pages.
+// Delaware Mandir Workshop Tickets — Google Sheets + Drive backend for GitHub Pages.
 // Bind this script to a private Google Sheet, run setupMandirTicketSystem once,
 // then deploy it as a web app that executes as you and is reachable by Anyone.
 
@@ -10,7 +10,8 @@ var HEADERS = [
   'Ticket ID', 'Queue number', 'Machine', 'Name', 'Department', 'Purpose', 'Phone',
   'Quantity', 'Paper', 'Width (in)', 'Length (in)', 'Thickness (in)', 'Needed by',
   'Status', 'Notes', 'Files', 'Created', 'Updated', 'Revision',
-  'Tracking code', 'Request key', 'Source', 'Customer email', 'Last notified status'
+  'Tracking code', 'Request key', 'Source', 'Customer email', 'Last notified status',
+  'Approx. cost (USD)', 'Cost basis', 'Cost estimate version'
 ];
 var NOTIFICATION_HEADERS = [
   'Notification ID', 'To', 'Bcc', 'Reply to', 'Subject', 'Body', 'Created',
@@ -20,6 +21,22 @@ var STATUSES = ['queued', 'in-progress', 'ready', 'collected', 'cancelled'];
 var MACHINES = { printer: 'Poster printing', foam: 'Foam cutting' };
 var PAPER_TYPES = ['Polypropylene', 'Adhesive', 'Canvas', 'Glossy', 'Standard'];
 var DEADLINES = ['Today', 'Tomorrow', 'This week', 'No rush'];
+var DELAWARE_TIME_ZONE = 'America/New_York';
+var DEFAULT_PRICING = {
+  version: 'materials-v1',
+  foamSheetWidthIn: 48,
+  foamSheetLengthIn: 96,
+  foamCentsPerInch: 1500,
+  foamMinimumSheetCents: 1500,
+  printInkCentsPerSquareFoot: 60,
+  printMaterialCentsPerSquareFoot: {
+    Standard: 40,
+    Glossy: 80,
+    Polypropylene: 100,
+    Adhesive: 125,
+    Canvas: 175
+  }
+};
 var MAX_FILES = 5;
 var MAX_FILE_BYTES = 200 * 1024 * 1024;
 var MAX_TOTAL_BYTES = 200 * 1024 * 1024;
@@ -58,14 +75,170 @@ function setupMandirTicketSystem() {
   if (!properties.getProperty('NOTIFICATION_OUTBOX_STARTED_AT')) {
     properties.setProperty('NOTIFICATION_OUTBOX_STARTED_AT', new Date().toISOString());
   }
+  initializePricingProperties_(properties);
   ensureTicketSheet_(book);
   initializeNotificationStatusMarkers_(book);
+  initializeCostEstimates_(book);
   ensureNotificationSheet_(book);
   installStatusNotificationTrigger_(book);
   installNotificationRetryTrigger_();
   authorizeLargeFileUploads();
   formatTicketSheet();
   SpreadsheetApp.getUi().alert('The private ticket sheet, Drive upload folder, and email notifications are ready. New-ticket alerts and customer replies use ' + DEFAULT_ADMIN_NOTIFICATION_EMAIL + '. Manage recipients through the Google Group, then deploy this script as a web app.');
+}
+
+function initializePricingProperties_(properties) {
+  var defaults = {
+    COST_ESTIMATE_VERSION: DEFAULT_PRICING.version,
+    COST_FOAM_SHEET_WIDTH_IN: DEFAULT_PRICING.foamSheetWidthIn,
+    COST_FOAM_SHEET_LENGTH_IN: DEFAULT_PRICING.foamSheetLengthIn,
+    COST_FOAM_CENTS_PER_INCH: DEFAULT_PRICING.foamCentsPerInch,
+    COST_FOAM_MIN_SHEET_CENTS: DEFAULT_PRICING.foamMinimumSheetCents,
+    COST_PRINT_INK_CENTS_PER_SQFT: DEFAULT_PRICING.printInkCentsPerSquareFoot,
+    COST_PRINT_STANDARD_CENTS_PER_SQFT: DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Standard,
+    COST_PRINT_GLOSSY_CENTS_PER_SQFT: DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Glossy,
+    COST_PRINT_POLYPROPYLENE_CENTS_PER_SQFT: DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Polypropylene,
+    COST_PRINT_ADHESIVE_CENTS_PER_SQFT: DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Adhesive,
+    COST_PRINT_CANVAS_CENTS_PER_SQFT: DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Canvas
+  };
+  Object.keys(defaults).forEach(function(key) {
+    if (properties.getProperty(key) === null) properties.setProperty(key, String(defaults[key]));
+  });
+}
+
+function pricingNumber_(properties, key, fallback, positive) {
+  var configured = properties.getProperty(key);
+  var value = Number(configured === null || configured === '' ? fallback : configured);
+  if (!isFinite(value) || value < 0 || (positive && (value <= 0 || value > 1000000))
+    || (!positive && (!Number.isSafeInteger(value) || value > 1000000000))) {
+    throw new Error(key + ' must be a safe ' + (positive ? 'positive dimension' : 'non-negative whole number of cents') + '.');
+  }
+  return value;
+}
+
+function pricingConfig_() {
+  var properties = PropertiesService.getScriptProperties();
+  return {
+    version: String(properties.getProperty('COST_ESTIMATE_VERSION') || DEFAULT_PRICING.version),
+    foamSheetWidthIn: pricingNumber_(properties, 'COST_FOAM_SHEET_WIDTH_IN', DEFAULT_PRICING.foamSheetWidthIn, true),
+    foamSheetLengthIn: pricingNumber_(properties, 'COST_FOAM_SHEET_LENGTH_IN', DEFAULT_PRICING.foamSheetLengthIn, true),
+    foamCentsPerInch: pricingNumber_(properties, 'COST_FOAM_CENTS_PER_INCH', DEFAULT_PRICING.foamCentsPerInch, false),
+    foamMinimumSheetCents: pricingNumber_(properties, 'COST_FOAM_MIN_SHEET_CENTS', DEFAULT_PRICING.foamMinimumSheetCents, false),
+    printInkCentsPerSquareFoot: pricingNumber_(properties, 'COST_PRINT_INK_CENTS_PER_SQFT', DEFAULT_PRICING.printInkCentsPerSquareFoot, false),
+    printMaterialCentsPerSquareFoot: {
+      Standard: pricingNumber_(properties, 'COST_PRINT_STANDARD_CENTS_PER_SQFT', DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Standard, false),
+      Glossy: pricingNumber_(properties, 'COST_PRINT_GLOSSY_CENTS_PER_SQFT', DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Glossy, false),
+      Polypropylene: pricingNumber_(properties, 'COST_PRINT_POLYPROPYLENE_CENTS_PER_SQFT', DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Polypropylene, false),
+      Adhesive: pricingNumber_(properties, 'COST_PRINT_ADHESIVE_CENTS_PER_SQFT', DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Adhesive, false),
+      Canvas: pricingNumber_(properties, 'COST_PRINT_CANVAS_CENTS_PER_SQFT', DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Canvas, false)
+    }
+  };
+}
+
+function estimateTicketCost_(ticket, pricing) {
+  pricing = pricing || pricingConfig_();
+  var disclaimer = 'Approximate material cost only; labor, finishing, tax, and design time are not included. Final cost may change.';
+  if (ticket.machine === 'printer') {
+    var squareFeet = Number(ticket.quantity) * Number(ticket.width) * Number(ticket.length) / 144;
+    var materialRate = pricing.printMaterialCentsPerSquareFoot[ticket.paperType];
+    if (!isFinite(squareFeet) || squareFeet <= 0 || !Number.isSafeInteger(materialRate)
+      || !Number.isSafeInteger(pricing.printInkCentsPerSquareFoot)) throw new Error('The print cost estimate could not be calculated.');
+    var paperCents = Math.round(squareFeet * materialRate);
+    var inkCents = Math.round(squareFeet * pricing.printInkCentsPerSquareFoot);
+    var printTotal = paperCents + inkCents;
+    if (!Number.isSafeInteger(paperCents) || paperCents < 0 || !Number.isSafeInteger(inkCents) || inkCents < 0
+      || !Number.isSafeInteger(printTotal) || printTotal < 0) throw new Error('The print cost estimate is too large.');
+    return {
+      version: pricing.version,
+      currency: 'USD',
+      amountCents: printTotal,
+      amountDisplay: '$' + (printTotal / 100).toFixed(2),
+      basis: squareFeet.toFixed(2) + ' sq ft of ' + String(ticket.paperType).toLowerCase() + ' material plus ink',
+      disclaimer: disclaimer
+    };
+  }
+  var width = Number(ticket.width);
+  var length = Number(ticket.length);
+  var quantity = Number(ticket.quantity);
+  var normal = Math.floor(pricing.foamSheetWidthIn / width) * Math.floor(pricing.foamSheetLengthIn / length);
+  var rotated = Math.floor(pricing.foamSheetWidthIn / length) * Math.floor(pricing.foamSheetLengthIn / width);
+  var piecesPerSheet = Math.max(normal, rotated);
+  var sheets;
+  if (piecesPerSheet > 0) sheets = Math.ceil(quantity / piecesPerSheet);
+  else {
+    var tiledNormal = Math.ceil(width / pricing.foamSheetWidthIn) * Math.ceil(length / pricing.foamSheetLengthIn);
+    var tiledRotated = Math.ceil(width / pricing.foamSheetLengthIn) * Math.ceil(length / pricing.foamSheetWidthIn);
+    sheets = Math.min(tiledNormal, tiledRotated) * quantity;
+  }
+  var perSheetCents = Math.max(pricing.foamMinimumSheetCents, Math.round(Number(ticket.thickness) * pricing.foamCentsPerInch));
+  var foamTotal = sheets * perSheetCents;
+  if (!Number.isSafeInteger(sheets) || sheets < 1 || !Number.isSafeInteger(perSheetCents) || perSheetCents < 0
+    || !Number.isSafeInteger(foamTotal) || foamTotal < 0) throw new Error('The foam cost estimate is too large.');
+  return {
+    version: pricing.version,
+    currency: 'USD',
+    amountCents: foamTotal,
+    amountDisplay: '$' + (foamTotal / 100).toFixed(2),
+    basis: sheets + ' estimated ' + pricing.foamSheetWidthIn + ' × ' + pricing.foamSheetLengthIn + ' in foam sheet' + (sheets === 1 ? '' : 's') + ' at ' + Number(ticket.thickness) + ' in thick',
+    disclaimer: disclaimer
+  };
+}
+
+function estimateFromRow_(row) {
+  var storedAmount = Number(row[24]);
+  if (row[24] !== '' && isFinite(storedAmount) && storedAmount >= 0) {
+    var cents = Math.round(storedAmount * 100);
+    if (!Number.isSafeInteger(cents)) throw new Error('The stored cost estimate is too large.');
+    return {
+      version: String(row[26] || DEFAULT_PRICING.version),
+      currency: 'USD',
+      amountCents: cents,
+      amountDisplay: '$' + (cents / 100).toFixed(2),
+      basis: String(row[25] || 'Stored material estimate'),
+      disclaimer: 'Approximate material cost only; labor, finishing, tax, and design time are not included. Final cost may change.'
+    };
+  }
+  var machineName = String(row[2]);
+  return estimateTicketCost_({
+    machine: machineName === MACHINES.printer || machineName === '24-inch roll printer' ? 'printer' : 'foam',
+    quantity: row[7],
+    paperType: String(row[8]),
+    width: row[9],
+    length: row[10],
+    thickness: row[11]
+  });
+}
+
+function initializeCostEstimates_(book) {
+  var sheet = ensureTicketSheet_(book);
+  if (sheet.getLastRow() < 2) return;
+  var rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADERS.length).getValues();
+  rows.forEach(function(row, index) {
+    if (row[24] !== '') return;
+    try {
+      var estimate = estimateFromRow_(row);
+      sheet.getRange(index + 2, 25, 1, 3).setValues([[estimate.amountCents / 100, estimate.basis, estimate.version]]);
+    } catch (error) {
+      console.error('Could not initialize cost estimate for row ' + (index + 2) + ': ' + error.message);
+    }
+  });
+}
+
+function formatCostEstimate_(estimate) {
+  return 'Approximate material cost: ' + estimate.amountDisplay + '\nBased on: ' + estimate.basis + '\n' + estimate.disclaimer;
+}
+
+function publicTrackingNumber_(stored) {
+  var value = String(stored || '').trim().toUpperCase();
+  return value.indexOf('DM-') === 0 ? value : 'DM-' + value;
+}
+
+function uniqueTrackingCode_(sheet) {
+  for (var attempt = 0; attempt < 100; attempt++) {
+    var candidate = randomCode_(12);
+    if (!findRow_(sheet, 20, candidate) && !findRow_(sheet, 20, publicTrackingNumber_(candidate))) return candidate;
+  }
+  throw new Error('Could not reserve a unique ticket code.');
 }
 
 function configureNotificationEmails() {
@@ -163,6 +336,9 @@ function formatTicketSheet() {
   sheet.setColumnWidth(6, 260);
   sheet.setColumnWidth(15, 260);
   sheet.setColumnWidth(16, 260);
+  sheet.setColumnWidth(25, 125);
+  sheet.setColumnWidth(26, 320);
+  sheet.getRange(2, 25, Math.max(sheet.getMaxRows() - 1, 1), 1).setNumberFormat('$0.00');
   sheet.hideColumns(1);
   sheet.hideColumns(20, 2);
   sheet.hideColumns(24);
@@ -196,7 +372,10 @@ function doPost(event) {
     enforceDailyLimit_(properties);
 
     var ticketNumber = nextTicketNumber_(sheet, request.machine);
-    var trackingCode = randomCode_(8);
+    var trackingCode = uniqueTrackingCode_(sheet);
+    var costEstimate = estimateTicketCost_(request);
+    request.trackingNumber = publicTrackingNumber_(trackingCode);
+    request.costEstimate = costEstimate;
     var createdAt = new Date();
     var uploadedFiles = saveFiles_(request.files, ticketNumber, request.requestKey, properties);
     var row = [
@@ -204,7 +383,8 @@ function doPost(event) {
       request.department, request.purpose, request.phone, request.quantity,
       request.paperType, request.width, request.length, request.thickness,
       request.neededBy, 'queued', request.notes, uploadedFiles.join('\n'),
-      createdAt, createdAt, 1, trackingCode, request.requestKey, 'GitHub Pages', request.email, 'queued'
+      createdAt, createdAt, 1, trackingCode, request.requestKey, 'GitHub Pages', request.email, 'queued',
+      costEstimate.amountCents / 100, costEstimate.basis, costEstimate.version
     ];
     sheet.getRange(sheet.getLastRow() + 1, 1, 1, HEADERS.length).setValues([row.map(escapeCell_)]);
     SpreadsheetApp.flush();
@@ -229,7 +409,7 @@ function doGet(event) {
   if (!/^[A-Za-z_$][\w$]{0,80}$/.test(callback)) return jsonResponse_({ ok: false, error: 'A valid callback is required.' });
   try {
     var params = event.parameter || {};
-    if (params.action === 'health') return javascriptResponse_(callback, { ok: true, service: 'Mandir Workshop Tickets' });
+    if (params.action === 'health') return javascriptResponse_(callback, { ok: true, service: 'Delaware Mandir Workshop Tickets' });
     if (params.action === 'beginUpload') return javascriptResponse_(callback, beginUpload_(params));
     if (params.action !== 'track') return javascriptResponse_(callback, { ok: false, error: 'Unsupported action.' });
     return javascriptResponse_(callback, trackTicket_(params));
@@ -244,12 +424,12 @@ function trackTicket_(params) {
   var byRequestKey = String(params.requestKey || '').toLowerCase();
   if (/^[a-f0-9]{32}$/.test(byRequestKey)) rowNumber = findRow_(sheet, 21, byRequestKey);
   if (!rowNumber) {
-    var number = String(params.ticket || '').trim().toUpperCase();
-    var code = String(params.code || '').trim().toUpperCase();
-    if (!/^[PF]-\d{4,8}$/.test(number) || !/^[A-Z2-9]{8}$/.test(code)) throw new Error('Enter the ticket number and tracking code from the receipt.');
-    rowNumber = findRow_(sheet, 2, number);
-    if (!rowNumber) throw new Error('Ticket not found. Check the number on the receipt.');
-    if (String(sheet.getRange(rowNumber, 20).getDisplayValue()).toUpperCase() !== code) throw new Error('Ticket not found. Check the number and tracking code.');
+    var tracking = String(params.tracking || '').trim().toUpperCase();
+    var code = tracking.indexOf('DM-') === 0 ? tracking.slice(3) : '';
+    if (/^[A-HJ-NP-Z2-9]{12}$/.test(code)) {
+      rowNumber = findRow_(sheet, 20, tracking) || findRow_(sheet, 20, code);
+    }
+    if (!rowNumber) throw new Error('Request not found. Check the ticket code on your receipt.');
   }
   if (!rowNumber) throw new Error('The ticket is still being saved.');
   var row = sheet.getRange(rowNumber, 1, 1, HEADERS.length).getValues()[0];
@@ -258,12 +438,12 @@ function trackTicket_(params) {
   return {
     ok: true,
     ticket: {
-      ticketNumber: String(row[1]),
-      trackingCode: String(row[19]),
+      trackingNumber: publicTrackingNumber_(row[19]),
       machineName: String(row[2]),
       status: status,
       position: position,
-      createdAt: row[16] instanceof Date ? row[16].toISOString() : String(row[16])
+      createdAt: row[16] instanceof Date ? row[16].toISOString() : String(row[16]),
+      costEstimate: estimateFromRow_(row)
     }
   };
 }
@@ -286,7 +466,7 @@ function validatePublicTicket_(input) {
     quantity: positiveNumber_(input.quantity, 'Quantity', 10000, true),
     width: positiveNumber_(input.width, 'Width', machine === 'printer' ? 24 : 10000, false),
     length: positiveNumber_(input.length, 'Length', 100000, false),
-    neededBy: requiredArrayChoice_(input.neededBy, DEADLINES, 'Choose when the job is needed.'),
+    neededBy: validateNeededBy_(input.neededBy),
     paperType: '',
     thickness: '',
     files: validateFiles_(input.files || [])
@@ -398,7 +578,7 @@ function beginUpload_(params) {
       payload: JSON.stringify({
         name: pendingName,
         parents: [folderId],
-        description: 'Pending Mandir workshop ticket upload',
+        description: 'Pending Delaware Mandir workshop ticket upload',
         appProperties: { mandirRequestKey: requestKey, mandirIndex: String(index) }
       }),
       headers: {
@@ -486,7 +666,7 @@ function inspectFile_(name, bytes) {
 function syncServerRow_(input, lock) {
   var properties = PropertiesService.getScriptProperties();
   var secret = properties.getProperty('SHARED_SECRET');
-  if (!secret || input.secret !== secret || [19, 20].indexOf(input.row.length) === -1 || typeof input.row[0] !== 'string' || !Number.isInteger(input.row[18])) return jsonResponse_({ ok: false });
+  if (!secret || input.secret !== secret || [19, 20, 24].indexOf(input.row.length) === -1 || typeof input.row[0] !== 'string' || !Number.isInteger(input.row[18])) return jsonResponse_({ ok: false });
   lock.waitLock(20000);
   var sheet = ensureTicketSheet_(openBook_());
   var match = findRow_(sheet, 1, input.row[0]);
@@ -494,7 +674,11 @@ function syncServerRow_(input, lock) {
   var target = match || sheet.getLastRow() + 1;
   sheet.getRange(target, 1, 1, 19).setValues([input.row.slice(0, 19).map(escapeCell_)]);
   sheet.getRange(target, 22).setValue('Node API');
-  if (input.row.length === 20) sheet.getRange(target, 23).setValue(escapeCell_(input.row[19]));
+  if (input.row.length >= 20) sheet.getRange(target, 23).setValue(escapeCell_(input.row[19]));
+  if (input.row.length === 24) {
+    sheet.getRange(target, 20).setValue(escapeCell_(input.row[20]));
+    sheet.getRange(target, 25, 1, 3).setValues([input.row.slice(21, 24).map(escapeCell_)]);
+  }
   SpreadsheetApp.flush();
   return jsonResponse_({ ok: true });
 }
@@ -654,15 +838,22 @@ function recordPendingStatusEdits_(sheet, firstRow, statuses) {
 function notifyAdminsOfNewTicket_(request, ticketNumber, properties, book, deferFlush) {
   var recipients = parseEmailList_(properties.getProperty('ADMIN_NOTIFICATION_EMAILS') || DEFAULT_ADMIN_NOTIFICATION_EMAIL);
   if (!recipients.length) return false;
-  var subject = '[Mandir tickets] New ' + ticketNumber;
+  var reference = String(request.trackingNumber || ticketNumber);
+  var estimate = request.costEstimate;
+  if (!estimate) {
+    try { estimate = estimateTicketCost_(request); }
+    catch (_estimateError) { estimate = null; }
+  }
+  var subject = '[Delaware Mandir tickets] New ' + reference;
   var body = [
     'A new ' + (request.machine === 'printer' ? 'poster printing' : 'foam cutting') + ' ticket was submitted.',
     '',
-    'Ticket: ' + ticketNumber,
+    'Ticket code: ' + reference,
     'Requester: ' + request.customerName,
     'Department: ' + request.department,
     'Needed by: ' + request.neededBy,
-    'Purpose: ' + request.purpose
+    'Purpose: ' + request.purpose,
+    estimate ? '\n' + formatCostEstimate_(estimate) : ''
   ].join('\n');
   enqueueNotification_(book, {
     id: 'new-ticket:' + request.requestKey,
@@ -687,19 +878,23 @@ function notifyCustomerOfStatus_(row, status, revision, book, deferFlush) {
     collected: 'Picked up',
     cancelled: 'Cancelled'
   };
-  var ticketNumber = String(row[1]);
+  var reference = row[19] ? publicTrackingNumber_(row[19]) : String(row[1]);
   var label = labels[status] || status;
+  var estimate;
+  try { estimate = estimateFromRow_(row); }
+  catch (_estimateError) { estimate = null; }
   var adminRecipients = parseEmailList_(PropertiesService.getScriptProperties().getProperty('ADMIN_NOTIFICATION_EMAILS') || DEFAULT_ADMIN_NOTIFICATION_EMAIL);
   enqueueNotification_(book, {
     id: 'status:' + String(row[0]) + ':' + String(revision) + ':' + status,
     to: email,
     replyTo: adminRecipients[0] || DEFAULT_ADMIN_NOTIFICATION_EMAIL,
-    subject: '[Mandir tickets] ' + ticketNumber + ' is ' + label.toLowerCase(),
+    subject: '[Delaware Mandir tickets] ' + reference + ' is ' + label.toLowerCase(),
     body: [
-      'Your Mandir workshop ticket ' + ticketNumber + ' was updated.',
+      'Your Delaware Mandir workshop request ' + reference + ' was updated.',
       '',
       'Current status: ' + label,
-      'Request: ' + String(row[2])
+      'Request: ' + String(row[2]),
+      estimate ? '\n' + formatCostEstimate_(estimate) : ''
     ].join('\n')
   });
   if (!deferFlush) flushNotifications_(book);
@@ -735,7 +930,7 @@ function flushNotifications_(book) {
       to: String(row[1]),
       subject: String(row[4]),
       body: String(row[5]),
-      name: 'Mandir Workshop Tickets'
+      name: 'Delaware Mandir Workshop Tickets'
     };
     if (row[2]) message.bcc = String(row[2]);
     if (row[3]) message.replyTo = String(row[3]);
@@ -786,8 +981,16 @@ function reconcileNotifications_(book) {
         department: String(row[4]),
         purpose: String(row[5]),
         neededBy: String(row[12]),
-        email: String(row[22])
+        email: String(row[22]),
+        quantity: row[7],
+        paperType: String(row[8]),
+        width: row[9],
+        length: row[10],
+        thickness: row[11],
+        trackingNumber: row[19] ? publicTrackingNumber_(row[19]) : String(row[1])
       };
+      try { request.costEstimate = estimateFromRow_(row); }
+      catch (_estimateError) { request.costEstimate = null; }
       if (notifyAdminsOfNewTicket_(request, String(row[1]), properties, book, true)) {
         ids[adminId] = true;
         queued++;
@@ -882,6 +1085,21 @@ function parseEmailList_(value) {
     seen[email] = true;
     return true;
   });
+}
+
+function validateNeededBy_(value) {
+  if (DEADLINES.indexOf(value) !== -1) return value;
+  var text = String(value || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) throw new Error('Choose or enter a valid needed-by date.');
+  var parts = text.split('-').map(Number);
+  var date = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+  if (parts[0] < 2000 || parts[0] > 2100 || date.getUTCFullYear() !== parts[0]
+    || date.getUTCMonth() !== parts[1] - 1 || date.getUTCDate() !== parts[2]) {
+    throw new Error('Choose or enter a valid needed-by date.');
+  }
+  var today = Utilities.formatDate(new Date(), DELAWARE_TIME_ZONE, 'yyyy-MM-dd');
+  if (text < today) throw new Error('Needed-by date cannot be in the past.');
+  return text;
 }
 
 function cleanText_(value, label, maxLength, required) {

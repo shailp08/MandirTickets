@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../integrations/google-sheets.gs', import.meta.url), 'utf8');
-const context = vm.createContext({ console });
+const context = vm.createContext({ console, Utilities: { formatDate: () => '2026-10-22' } });
 vm.runInContext(source, context, { filename: 'google-sheets.gs' });
 
 const loadContext = (globals = {}) => {
@@ -94,6 +94,37 @@ test('Apps Script backend validates a complete foam ticket', () => {
   assert.equal(ticket.machine, 'foam');
   assert.equal(ticket.quantity, 2);
   assert.equal(ticket.thickness, 2);
+  assert.equal(context.validatePublicTicket_({ ...baseTicket(), neededBy: '2028-02-29' }).neededBy, '2028-02-29');
+});
+
+test('Apps Script cost estimates match the Node material formulas', () => {
+  const print = context.estimateTicketCost_({ machine: 'printer', paperType: 'Glossy', quantity: 2, width: 24, length: 36 }, context.DEFAULT_PRICING);
+  assert.equal(print.amountCents, 1680);
+  assert.equal(print.amountDisplay, '$16.80');
+  const foam = context.estimateTicketCost_({ machine: 'foam', quantity: 5, width: 20, length: 36, thickness: 2 }, context.DEFAULT_PRICING);
+  assert.equal(foam.amountCents, 6000);
+  assert.match(foam.basis, /2 estimated 48 × 96/);
+});
+
+test('Apps Script rejects unsafe pricing totals and recognizes the legacy printer name', () => {
+  assert.throws(() => context.estimateTicketCost_({
+    machine: 'printer', paperType: 'Glossy', quantity: 10000, width: 24, length: 100000,
+  }, {
+    ...context.DEFAULT_PRICING,
+    printInkCentsPerSquareFoot: Number.MAX_SAFE_INTEGER,
+    printMaterialCentsPerSquareFoot: { Glossy: Number.MAX_SAFE_INTEGER },
+  }), /too large|could not be calculated/i);
+  const unsafeProperties = propertiesStore({ COST_PRINT_INK_CENTS_PER_SQFT: String(Number.MAX_SAFE_INTEGER) });
+  const unsafeContext = loadContext({ PropertiesService: { getScriptProperties: () => unsafeProperties } });
+  assert.throws(() => unsafeContext.pricingConfig_(), /safe.*cents/i);
+  const row = Array(27).fill('');
+  row[2] = '24-inch roll printer';
+  row[7] = 1;
+  row[8] = 'Standard';
+  row[9] = 24;
+  row[10] = 24;
+  const isolated = loadContext({ PropertiesService: { getScriptProperties: () => propertiesStore({}) } });
+  assert.equal(isolated.estimateFromRow_(row).amountDisplay, '$4.00');
 });
 
 test('Apps Script backend requires a safe print file and rejects bot submissions', () => {
@@ -160,6 +191,7 @@ test('setup migrates the legacy admin recipient to the managed group only once',
   });
   isolated.ensureTicketSheet_ = () => {};
   isolated.initializeNotificationStatusMarkers_ = () => {};
+  isolated.initializeCostEstimates_ = () => {};
   isolated.ensureNotificationSheet_ = () => {};
   isolated.installStatusNotificationTrigger_ = () => {};
   isolated.installNotificationRetryTrigger_ = () => {};
@@ -183,8 +215,25 @@ test('Apps Script backend rejects invalid dimensions, deadlines, keys, and attac
   }
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), width: '0' }), /valid width/i);
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), neededBy: 'Eventually' }), /needed/i);
+  assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), neededBy: '2026-02-30' }), /needed/i);
+  assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), neededBy: '2026-10-21' }), /past/i);
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), requestKey: 'short' }), /Refresh/i);
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), files: [{ name: 'bad.exe', size: 4, data: 'AAAAAA==' }] }), /PDF, SVG/i);
+});
+
+test('Apps Script reserves codes against raw and DM-prefixed values in the tracking column', () => {
+  const isolated = loadContext();
+  const candidates = ['AAAAAAAAAAAA', 'BBBBBBBBBBBB', 'CCCCCCCCCCCC'];
+  isolated.randomCode_ = () => candidates.shift();
+  const lookedUp = [];
+  isolated.findRow_ = (_sheet, column, value) => {
+    lookedUp.push([column, value]);
+    return value === 'AAAAAAAAAAAA' || value === 'DM-BBBBBBBBBBBB' ? 2 : 0;
+  };
+  assert.equal(isolated.uniqueTrackingCode_({}), 'CCCCCCCCCCCC');
+  assert.ok(lookedUp.some(([, value]) => value === 'AAAAAAAAAAAA'));
+  assert.ok(lookedUp.some(([, value]) => value === 'DM-BBBBBBBBBBBB'));
+  assert.ok(lookedUp.some(([, value]) => value === 'DM-CCCCCCCCCCCC'));
 });
 
 test('upload reservation retries charge daily bytes exactly once per request file', () => {
@@ -341,7 +390,7 @@ test('duplicate createTicket requests write one Sheet row and reuse the first ti
   isolated.findRow_ = (target, column, value) => target === sheet ? (rowWritten ? 2 : 0) : findRow(target, column, value);
   isolated.enforceDailyLimit_ = () => {};
   isolated.nextTicketNumber_ = () => 'F-0001';
-  isolated.randomCode_ = () => 'ABCD2345';
+  isolated.randomCode_ = () => 'ABCD2345EFGH';
   isolated.saveFiles_ = () => { fileSaves++; return []; };
   isolated.incrementDailyCount_ = () => { dailyIncrements++; };
   isolated.escapeCell_ = value => value;
@@ -360,7 +409,79 @@ test('duplicate createTicket requests write one Sheet row and reuse the first ti
   assert.equal(emails.length, 1);
   assert.equal(emails[0].to, 'owner@example.com');
   assert.equal(emails[0].bcc, 'helper@example.com');
+  assert.match(emails[0].subject, /DM-ABCD2345EFGH/);
+  assert.match(emails[0].body, /Approximate material cost: \$30\.00/);
   assert.ok(emails.every(message => message.replyTo === 'requester@example.com'));
+});
+
+test('Apps Script tracker accepts one opaque ticket code and returns only public fields', () => {
+  const row = Array(27).fill('');
+  row[0] = 'private-ticket-id';
+  row[1] = 'F-0012';
+  row[2] = 'Foam cutting';
+  row[3] = 'Private Person';
+  row[13] = 'queued';
+  row[16] = new Date('2026-10-20T12:00:00.000Z');
+  row[19] = 'ABCD2345EFGH';
+  row[22] = 'private@example.com';
+  row[24] = 30;
+  row[25] = '1 estimated 48 × 96 in foam sheet at 2 in thick';
+  row[26] = 'materials-v1';
+  const sheet = {
+    getLastRow: () => 2,
+    getRange: () => ({ getValues: () => [row], getDisplayValue: () => row[19] }),
+  };
+  const isolated = loadContext({ PropertiesService: { getScriptProperties: () => propertiesStore({}) } });
+  isolated.openBook_ = () => ({});
+  isolated.ensureTicketSheet_ = () => sheet;
+  isolated.findRow_ = (_target, column, value) => column === 20 && value === 'ABCD2345EFGH' ? 2 : 0;
+
+  const result = isolated.trackTicket_({ tracking: 'DM-ABCD2345EFGH' });
+  assert.equal(result.ok, true);
+  assert.equal(result.ticket.trackingNumber, 'DM-ABCD2345EFGH');
+  assert.equal(result.ticket.costEstimate.amountDisplay, '$30.00');
+  assert.equal(result.ticket.ticketNumber, undefined);
+  assert.equal(JSON.stringify(result).includes('Private Person'), false);
+  assert.equal(JSON.stringify(result).includes('private@example.com'), false);
+  assert.throws(() => isolated.trackTicket_({ tracking: 'F-0012' }), /not found/i);
+  assert.throws(() => isolated.trackTicket_({ ticket: 'F-0012', code: 'ABCD2345' }), /not found/i);
+  assert.throws(() => isolated.trackTicket_({ tracking: 'ABCD2345EFGH' }), /not found/i);
+});
+
+test('current Node mirror payload maps ticket code and frozen estimate into appended Sheet columns', () => {
+  const properties = propertiesStore({ SHARED_SECRET: 'shared-secret' });
+  const writes = [];
+  const sheet = {
+    getLastRow: () => 1,
+    getRange(row, column, rowCount = 1, columnCount = 1) {
+      return {
+        getValue: () => 0,
+        setValue: value => writes.push({ row, column, values: [[value]] }),
+        setValues: values => writes.push({ row, column, rowCount, columnCount, values }),
+      };
+    },
+  };
+  const lock = { waitLock() {}, hasLock: () => true, releaseLock() {} };
+  const isolated = loadContext({
+    PropertiesService: { getScriptProperties: () => properties },
+    SpreadsheetApp: { flush() {} },
+  });
+  isolated.openBook_ = () => ({});
+  isolated.ensureTicketSheet_ = () => sheet;
+  isolated.findRow_ = () => 0;
+  isolated.jsonResponse_ = value => value;
+  const row = Array(24).fill('');
+  row[0] = 'ticket-id';
+  row[18] = 2;
+  row[19] = 'requester@example.com';
+  row[20] = 'DM-ABCDEFGHJKLM';
+  row[21] = 16.8;
+  row[22] = '12.00 sq ft of glossy material plus ink';
+  row[23] = 'materials-v1';
+
+  assert.equal(isolated.syncServerRow_({ secret: 'shared-secret', row }, lock).ok, true);
+  assert.equal(writes.find(write => write.column === 20).values[0][0], 'DM-ABCDEFGHJKLM');
+  assert.deepEqual([...writes.find(write => write.column === 25).values[0]], [16.8, '12.00 sq ft of glossy material plus ink', 'materials-v1']);
 });
 
 test('installed status edit handler emails the requester and advances revision metadata', () => {
@@ -373,17 +494,21 @@ test('installed status edit handler emails the requester and advances revision m
     hasLock() { return this.locked; },
     releaseLock() { this.locked = false; },
   };
-  const row = Array(24).fill('');
+  const row = Array(27).fill('');
   row[1] = 'F-0007';
   row[2] = 'Foam cutting';
   row[13] = 'ready';
   row[18] = 3;
+  row[19] = 'JKLM2345NPQR';
   row[22] = 'requester@example.com';
   row[23] = 'in-progress';
+  row[24] = 30;
+  row[25] = '1 estimated foam sheet';
+  row[26] = 'materials-v1';
   const sheet = {
     getName: () => 'Tickets',
     getRange(_row, column, _rows, columns) {
-      if (column === 1 && columns === 24) return { getValues: () => [row] };
+      if (column === 1 && columns === 27) return { getValues: () => [row] };
       return { setValue: value => writes.push({ column, value }) };
     },
   };
@@ -408,7 +533,8 @@ test('installed status edit handler emails the requester and advances revision m
   assert.equal(sent.length, 1);
   assert.equal(sent[0].to, 'requester@example.com');
   assert.equal(sent[0].replyTo, 'demandirtickets@googlegroups.com');
-  assert.match(sent[0].subject, /F-0007.*ready for pickup/i);
+  assert.match(sent[0].subject, /DM-JKLM2345NPQR.*ready for pickup/i);
+  assert.match(sent[0].body, /Approximate material cost: \$30\.00/);
   assert.equal(writes.find(write => write.column === 19).value, 4);
   assert.ok(!Number.isNaN(Date.parse(writes.find(write => write.column === 18).value)));
 });
@@ -424,7 +550,7 @@ test('installed status edit handler notifies every requester in a bulk status ed
     releaseLock() { this.locked = false; },
   };
   const rows = [2, 3].map((rowNumber, index) => {
-    const row = Array(24).fill('');
+    const row = Array(27).fill('');
     row[0] = `ticket-${rowNumber}`;
     row[1] = `F-000${rowNumber}`;
     row[2] = 'Foam cutting';
@@ -437,7 +563,7 @@ test('installed status edit handler notifies every requester in a bulk status ed
   const sheet = {
     getName: () => 'Tickets',
     getRange(rowNumber, column, _rowCount, columns) {
-      if (column === 1 && columns === 24) return { getValues: () => [rows[rowNumber - 2]] };
+      if (column === 1 && columns === 27) return { getValues: () => [rows[rowNumber - 2]] };
       return { setValue: value => writes.push({ rowNumber, column, value }) };
     },
   };
@@ -475,7 +601,7 @@ test('bulk status edits do not notify or revise rows already at that status', ()
     releaseLock() { this.locked = false; },
   };
   const rows = [2, 3].map(rowNumber => {
-    const row = Array(24).fill('');
+    const row = Array(27).fill('');
     row[0] = `ticket-${rowNumber}`;
     row[1] = `F-000${rowNumber}`;
     row[2] = 'Foam cutting';
@@ -488,7 +614,7 @@ test('bulk status edits do not notify or revise rows already at that status', ()
   const sheet = {
     getName: () => 'Tickets',
     getRange(rowNumber, column, _rowCount, columns) {
-      if (column === 1 && columns === 24) return { getValues: () => [rows[rowNumber - 2]] };
+      if (column === 1 && columns === 27) return { getValues: () => [rows[rowNumber - 2]] };
       return { setValue: value => writes.push({ rowNumber, column, value }) };
     },
   };
@@ -538,12 +664,22 @@ test('Apps Script persists failed admin and customer notifications and retries t
   });
   isolated.openBook_ = () => outbox.book;
 
-  assert.equal(isolated.notifyAdminsOfNewTicket_(baseTicket(), 'F-0008', properties, outbox.book), true);
-  const customerRow = Array(24).fill('');
+  const estimate = isolated.estimateTicketCost_(baseTicket(), isolated.DEFAULT_PRICING);
+  const adminTicket = { ...baseTicket(), trackingNumber: 'DM-ABCD2345EFGH', costEstimate: estimate };
+  assert.equal(isolated.notifyAdminsOfNewTicket_(adminTicket, 'F-0008', properties, outbox.book), true);
+  const customerRow = Array(27).fill('');
   customerRow[0] = 'ticket-id';
   customerRow[1] = 'F-0008';
   customerRow[2] = 'Foam cutting';
+  customerRow[7] = 2;
+  customerRow[9] = 20;
+  customerRow[10] = 36;
+  customerRow[11] = 2;
+  customerRow[19] = 'DM-ABCD2345EFGH';
   customerRow[22] = 'requester@example.com';
+  customerRow[24] = estimate.amountCents / 100;
+  customerRow[25] = estimate.basis;
+  customerRow[26] = estimate.version;
   assert.equal(isolated.notifyCustomerOfStatus_(customerRow, 'ready', 2, outbox.book), true);
 
   assert.equal(outbox.rows.length, 3);
@@ -557,6 +693,12 @@ test('Apps Script persists failed admin and customer notifications and retries t
   assert.ok(outbox.rows.slice(1).every(row => !Number.isNaN(Date.parse(row[10]))));
   assert.deepEqual(sent.map(message => message.to), ['owner@example.com', 'requester@example.com']);
   assert.equal(sent[0].bcc, 'helper@example.com');
+  assert.equal(sent[0].replyTo, 'requester@example.com');
+  assert.match(sent[0].subject, /DM-ABCD2345EFGH/);
+  assert.match(sent[0].body, /Approximate material cost: \$30\.00/);
+  assert.equal(sent[1].replyTo, 'owner@example.com');
+  assert.match(sent[1].subject, /DM-ABCD2345EFGH/);
+  assert.match(sent[1].body, /Approximate material cost: \$30\.00/);
 });
 
 test('periodic reconciliation recovers notifications missed by a status-edit lock timeout', () => {
@@ -565,7 +707,7 @@ test('periodic reconciliation recovers notifications missed by a status-edit loc
     ADMIN_NOTIFICATION_EMAILS: 'owner@example.com',
     NOTIFICATION_OUTBOX_STARTED_AT: '2024-01-01T00:00:00.000Z',
   });
-  const ticket = Array(24).fill('');
+  const ticket = Array(27).fill('');
   ticket[0] = 'ticket-id';
   ticket[1] = 'F-0099';
   ticket[2] = 'Foam cutting';
@@ -584,7 +726,7 @@ test('periodic reconciliation recovers notifications missed by a status-edit loc
   const ticketSheet = {
     getLastRow: () => 2,
     getRange(_row, column, _rowCount, columns) {
-      if (column === 1 && columns === 24) return { getValues: () => [ticket] };
+      if (column === 1 && columns === 27) return { getValues: () => [ticket] };
       return { setValue: value => { ticket[column - 1] = value; metadataWrites.push({ column, value }); } };
     },
   };

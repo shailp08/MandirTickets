@@ -61,10 +61,12 @@ export async function sheetsJsonp(url, parameters, timeout = 15000) {
   }
 }
 
-export async function trackSheetsTicket(url, { ticket, code, requestKey } = {}) {
+export async function trackSheetsTicket(url, { trackingNumber, ticket, code, requestKey } = {}) {
   const response = await sheetsJsonp(url, {
     action: 'track',
-    ...(requestKey ? { requestKey } : { ticket: String(ticket || '').trim().toUpperCase(), code: String(code || '').trim().toUpperCase() }),
+    ...(requestKey ? { requestKey } : trackingNumber
+      ? { tracking: String(trackingNumber).trim().toUpperCase() }
+      : { ticket: String(ticket || '').trim().toUpperCase(), code: String(code || '').trim().toUpperCase() }),
   });
   if (!response?.ok) throw new Error(response?.error || 'The ticket could not be found.');
   return response.ticket;

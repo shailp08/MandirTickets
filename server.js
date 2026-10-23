@@ -10,6 +10,7 @@ import { createSheetsSync, csv } from './lib/sheets.js';
 import { validateFilename, validateUpload, createMalwareScanner } from './lib/uploads.js';
 import { acquireProcessLock } from './lib/process-lock.js';
 import { createNotificationService } from './lib/notifications.js';
+import { pricingFromEnvironment } from './lib/cost-estimate.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.DATA_DIR || path.join(here, 'data');
@@ -34,7 +35,8 @@ if (production && (!scanner || !appOrigin?.startsWith('https://') || process.env
 await fs.mkdir(uploadDir, { recursive: true });
 const releaseLock = acquireProcessLock(dataDir);
 process.once('exit', releaseLock);
-const store = await createStore(dataDir);
+const pricing = pricingFromEnvironment(process.env);
+const store = await createStore(dataDir, { pricing });
 const sheets = createSheetsSync(store, { url: process.env.SHEETS_WEBHOOK_URL, secret: process.env.SHEETS_SHARED_SECRET });
 const defaultAdminNotificationEmail = 'demandirtickets@googlegroups.com';
 const notifications = await createNotificationService(dataDir, {
@@ -48,6 +50,7 @@ const notifications = await createNotificationService(dataDir, {
   replyTo: process.env.NOTIFICATION_REPLY_TO || defaultAdminNotificationEmail,
   appUrl: process.env.APP_ORIGIN,
 });
+await notifications.reconcile(store.list());
 const enqueueNotification = operation => operation.catch(error => console.error('Could not queue notification:', error.message));
 const app = express();
 app.disable('x-powered-by');
@@ -121,13 +124,23 @@ app.delete('/api/session', (req, res) => { sessions.delete(sessionToken(req)); r
 app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 app.get('/api/config', (_req, res) => res.json({ machines, paperTypes: papers, turnaroundOptions: deadlines, statuses,
   uploads: { maxFiles: maxUploadFiles, maxFileBytes: maxUploadBytes } }));
-app.get('/api/queue', (_req, res) => res.json({ machines: publicQueue(store.list()), updatedAt: new Date().toISOString() }));
+app.get('/api/queue', (_req, res) => res.json({ machines: publicQueue(store.list()).map(({ id, name, waiting }) => ({ id, name, waiting })), updatedAt: new Date().toISOString() }));
+const positionFor = ticket => publicQueue(store.list()).find(machine => machine.id === ticket.machine)
+  ?.tickets.find(candidate => candidate.ticketNumber === ticket.ticketNumber)?.position || null;
+const publicTicket = ticket => ({
+  trackingNumber: ticket.trackingNumber,
+  machine: ticket.machine,
+  status: ticket.status,
+  position: positionFor(ticket),
+  costEstimate: ticket.costEstimate,
+  createdAt: ticket.createdAt,
+});
 app.get('/api/track/:number', (req, res) => {
-  const ticket = store.list().find(t => t.ticketNumber.toUpperCase() === req.params.number.toUpperCase());
-  if (!ticket) return res.status(404).json({ error: 'Ticket not found. Check the number on your receipt.' });
-  const queue = publicQueue(store.list()).find(m => m.id === ticket.machine);
-  res.json({ ticketNumber: ticket.ticketNumber, machine: machines[ticket.machine], status: ticket.status,
-    position: queue.tickets.find(t => t.ticketNumber === ticket.ticketNumber)?.position || null });
+  const number = String(req.params.number || '').trim().toUpperCase();
+  const ticket = /^DM-[A-HJ-NP-Z2-9]{12}$/.test(number)
+    ? store.list().find(candidate => candidate.trackingNumber === number) : null;
+  if (!ticket) return res.status(404).json({ error: 'Request not found. Check the ticket code on your receipt.' });
+  res.json(publicTicket(ticket));
 });
 const upload = multer({ limits: { fields: 20, fieldSize: 16384, files: maxUploadFiles, fileSize: maxUploadBytes }, storage: multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadDir),
@@ -188,9 +201,7 @@ app.post('/api/tickets', (req, res, next) => {
     if (duplicate) await cleanup(req.files);
     if (!duplicate) await enqueueNotification(notifications.ticketCreated(ticket));
     void sheets.sync();
-    res.status(duplicate ? 200 : 201).json({ ticket: { ticketNumber: ticket.ticketNumber, machine: ticket.machine, status: ticket.status,
-      createdAt: ticket.createdAt, department: ticket.department,
-      position: publicQueue(store.list()).find(m => m.id === ticket.machine).tickets.find(t => t.ticketNumber === ticket.ticketNumber)?.position || null } });
+    res.status(duplicate ? 200 : 201).json({ ticket: { ...publicTicket(ticket), department: ticket.department } });
   } catch (error) { if (!committed) await cleanup(req.files); next(error); }
   finally { req.releaseUploadSlot(); }
 });
@@ -225,10 +236,13 @@ app.use((error, _req, res, next) => {
     LIMIT_FILE_COUNT: `Attach no more than ${maxUploadFiles} files.`, LIMIT_UNEXPECTED_FILE: `Attach no more than ${maxUploadFiles} files.` })[error.code];
   res.status(status).json({ error: uploadMessage || (error.type === 'entity.parse.failed' ? 'Invalid JSON request.' : status === 500 ? 'Could not save this request. Please try again.' : error.message) });
 });
-const interval = setInterval(() => void sheets.sync(), 30000);
+const interval = setInterval(() => {
+  void sheets.sync();
+  void notifications.reconcile(store.list()).catch(error => console.error('Could not reconcile notifications:', error.message));
+}, 30000);
 interval.unref();
 void sheets.sync();
-const server = app.listen(Number(process.env.PORT || 3000), () => console.log('Mandir Ticket Desk ready on port ' + server.address().port));
+const server = app.listen(Number(process.env.PORT || 3000), () => console.log('Delaware Mandir Ticket Desk ready on port ' + server.address().port));
 server.requestTimeout = uploadRequestTimeoutMs;
 server.headersTimeout = Math.min(60000, uploadRequestTimeoutMs);
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {

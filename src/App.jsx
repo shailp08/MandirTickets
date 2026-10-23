@@ -27,6 +27,10 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, ''
 const SHEETS_API_URL = (import.meta.env.VITE_GOOGLE_SCRIPT_URL || '').replace(/\/$/, '');
 const apiUrl = path => `${API_BASE_URL}${path}`;
 const staticPreview = location.hostname.endsWith('.github.io') && !API_BASE_URL && !SHEETS_API_URL;
+const todayForDateInput = () => {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+};
 
 const STATUS_LABELS = {
   queued: 'Waiting',
@@ -59,12 +63,24 @@ const createRequestKey = () => Array.from(
 function Header() {
   return (
     <header className="site-header">
-      <a className="brand" href={location.pathname} aria-label="Mandir workshop ticket home">
-        <span className="brand-mark" aria-hidden="true">M</span>
-        <span><strong>Mandir</strong><small>Workshop tickets</small></span>
+      <a className="brand" href={location.pathname} aria-label="Delaware Mandir workshop ticket home">
+        <span className="brand-mark" aria-hidden="true">D</span>
+        <span><strong>Delaware Mandir</strong><small>Workshop tickets</small></span>
       </a>
       <a className="header-note" href="#tracker"><MagnifyingGlass aria-hidden="true" /> Track a ticket</a>
     </header>
+  );
+}
+
+function CostEstimate({ estimate }) {
+  if (!estimate) return null;
+  return (
+    <div className="cost-estimate">
+      <small>Approximate material cost</small>
+      <strong>{estimate.amountDisplay}</strong>
+      <p>{estimate.basis}</p>
+      <p>{estimate.disclaimer}</p>
+    </div>
   );
 }
 
@@ -206,11 +222,11 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
         <span className="receipt-check"><Check size={25} weight="bold" aria-hidden="true" /></span>
         <p className="eyebrow">Ticket submitted</p>
         <h2 id="receipt-title">Your request is in the queue.</h2>
-        <p className="receipt-label">Ticket number</p>
-        <strong className="receipt-number">{ticket.ticketNumber}</strong>
-        {ticket.trackingCode && <><p className="receipt-label">Tracking code</p><strong className="tracking-code">{ticket.trackingCode}</strong></>}
+        <p className="receipt-label">Ticket code</p>
+        <strong className="receipt-number receipt-code">{ticket.trackingNumber || ticket.trackingCode || ticket.ticketNumber}</strong>
         <p>{machineName(ticket)} · {ticket.department}{ticket.position ? ` · Number in line ${ticket.position}` : ''}</p>
-        <p className="receipt-help">Save the ticket number{ticket.trackingCode ? ' and tracking code' : ''}. You will need them to check progress or collect the finished job.</p>
+        <CostEstimate estimate={ticket.costEstimate} />
+        <p className="receipt-help">Save this one ticket code. You will need it to check progress or collect the finished job.</p>
         <div className="receipt-actions">
           <button className="button button-secondary" type="button" onClick={() => window.print()}><Printer aria-hidden="true" /> Print receipt</button>
           <a className="button button-secondary" href="#tracker"><MagnifyingGlass aria-hidden="true" /> Track ticket</a>
@@ -240,7 +256,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
             <label>Email <span>Required</span><input name="email" type="email" autoComplete="email" required maxLength="254" placeholder="you@example.com" /></label>
             <label>Phone <span>Optional</span><input name="phone" type="tel" autoComplete="tel" maxLength="40" placeholder="For questions about the job" /></label>
             <label className="field-full">What is this for? <span>Required</span><textarea name="purpose" required maxLength="2000" rows="4" placeholder="Describe the event, project, and how the finished piece will be used." /></label>
-            <label>Needed by <span>Required</span><select name="neededBy" required defaultValue="No rush"><option>Today</option><option>Tomorrow</option><option>This week</option><option>No rush</option></select></label>
+            <label>Needed by <span>Required</span><input name="neededBy" type="date" min={todayForDateInput()} required /></label>
           </div>
         </fieldset>
 
@@ -281,7 +297,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
         </fieldset>
 
         <div className="submit-area">
-          <p>Your ticket is saved before you receive a ticket number. Timing depends on staff and material availability.</p>
+          <p>Your ticket is saved before you receive a ticket code. Timing depends on staff and material availability.</p>
           <button className="button button-primary submit-button" type="submit" disabled={submitting}>{submitting ? 'Submitting ticket' : canRetry ? 'Try again' : 'Submit ticket'} <ArrowRight weight="bold" aria-hidden="true" /></button>
         </div>
         {submitting && <progress max="100" value={progress} aria-label={`Upload progress: ${progress}%`} />}
@@ -292,16 +308,14 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
 }
 
 function TicketTracker({ recentTicket }) {
-  const [ticketNumber, setTicketNumber] = useState('');
-  const [trackingCode, setTrackingCode] = useState('');
+  const [ticketCode, setTicketCode] = useState('');
   const [result, setResult] = useState(null);
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (!recentTicket) return;
-    setTicketNumber(recentTicket.ticketNumber || '');
-    setTrackingCode(recentTicket.trackingCode || '');
+    setTicketCode(recentTicket.trackingNumber || recentTicket.trackingCode || recentTicket.ticketNumber || '');
     setResult(recentTicket);
   }, [recentTicket]);
 
@@ -313,9 +327,9 @@ function TicketTracker({ recentTicket }) {
     try {
       let tracked;
       if (SHEETS_API_URL) {
-        tracked = await trackSheetsTicket(SHEETS_API_URL, { ticket: ticketNumber, code: trackingCode });
+        tracked = await trackSheetsTicket(SHEETS_API_URL, { trackingNumber: ticketCode });
       } else if (!staticPreview) {
-        const response = await fetch(apiUrl(`/api/track/${encodeURIComponent(ticketNumber.trim())}`), { credentials: 'include', signal: AbortSignal.timeout(15000) });
+        const response = await fetch(apiUrl(`/api/track/${encodeURIComponent(ticketCode.trim())}`), { credentials: 'include', signal: AbortSignal.timeout(15000) });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.error || 'The ticket could not be found.');
         tracked = data;
@@ -334,18 +348,17 @@ function TicketTracker({ recentTicket }) {
     <section className="tracker-section" id="tracker" aria-labelledby="tracker-title">
       <div className="tracker-heading">
         <span className="tracker-icon"><ClockCounterClockwise size={28} weight="duotone" aria-hidden="true" /></span>
-        <div><p className="eyebrow">Ticket tracker</p><h2 id="tracker-title">Check your request.</h2><p>Enter the ticket number and tracking code from your receipt.</p></div>
+        <div><p className="eyebrow">Ticket tracker</p><h2 id="tracker-title">Check your request.</h2><p>Enter the one ticket code from your receipt.</p></div>
       </div>
-      <form className={SHEETS_API_URL ? 'tracker-form' : 'tracker-form tracker-form-compact'} onSubmit={track} aria-busy={loading}>
-        <label>Ticket number <span>Required</span><input value={ticketNumber} onChange={event => setTicketNumber(event.target.value.toUpperCase())} required maxLength="12" placeholder="P-0001" autoComplete="off" /></label>
-        {SHEETS_API_URL && <label>Tracking code <span>Required</span><input value={trackingCode} onChange={event => setTrackingCode(event.target.value.toUpperCase())} required minLength="8" maxLength="8" placeholder="ABCD2345" autoComplete="off" /></label>}
+      <form className="tracker-form tracker-form-compact" onSubmit={track} aria-busy={loading}>
+        <label>Ticket code <span>Required</span><input value={ticketCode} onChange={event => setTicketCode(event.target.value.toUpperCase())} required minLength="6" maxLength="20" placeholder="DM-ABCD2345EFGH" autoComplete="off" /></label>
         <button className="button button-primary" type="submit" disabled={loading}>{loading ? 'Checking' : 'Track ticket'} <MagnifyingGlass aria-hidden="true" /></button>
       </form>
       {notice && <p className="notice error" role="alert">{notice}</p>}
       {result && (
         <div className="tracker-result" role="status" aria-live="polite">
           <span className={`status-dot status-${result.status}`} aria-hidden="true" />
-          <div><small>{result.ticketNumber}</small><strong>{STATUS_LABELS[result.status] || result.status}</strong><p>{machineName(result)}{result.position ? ` · Number in line ${result.position}` : ''}</p></div>
+          <div><small>{result.trackingNumber || result.trackingCode || result.ticketNumber}</small><strong>{STATUS_LABELS[result.status] || result.status}</strong><p>{machineName(result)}{result.position ? ` · Number in line ${result.position}` : ''}</p><CostEstimate estimate={result.costEstimate} /></div>
         </div>
       )}
     </section>
@@ -371,7 +384,7 @@ function App() {
         {machine && <div id="ticket-form"><TicketForm machine={machine} onChangeMachine={chooseMachine} onTicket={setRecentTicket} /></div>}
         <TicketTracker recentTicket={recentTicket} />
       </main>
-      <footer><strong>Mandir Workshop Tickets</strong><span>Poster printing and foam cutting requests in one place.</span></footer>
+      <footer><strong>Delaware Mandir Workshop Tickets</strong><span>Poster printing and foam cutting requests in one place.</span></footer>
     </div>
   );
 }

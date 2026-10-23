@@ -28,6 +28,7 @@ if (!Array.isArray(tickets)) {
 
 const seenIds = new Set();
 const seenNumbers = new Set();
+const seenTrackingNumbers = new Set();
 const referencedFiles = new Set();
 let fileCount = 0;
 
@@ -43,6 +44,14 @@ for (const [index, ticket] of tickets.entries()) {
   if (typeof ticket.ticketNumber !== 'string' || !/^[PF]-\d{4,}$/.test(ticket.ticketNumber)) errors.push(`${label} has an invalid queue number.`);
   else if (seenNumbers.has(ticket.ticketNumber)) errors.push(`${label} duplicates a queue number.`);
   else seenNumbers.add(ticket.ticketNumber);
+  if (ticket.trackingNumber === undefined) warnings.push(`${label} will receive a private ticket code during the next server migration.`);
+  else if (typeof ticket.trackingNumber !== 'string' || !/^DM-[A-HJ-NP-Z2-9]{12}$/.test(ticket.trackingNumber)) errors.push(`${label} has an invalid ticket code.`);
+  else if (seenTrackingNumbers.has(ticket.trackingNumber)) errors.push(`${label} duplicates a ticket code.`);
+  else seenTrackingNumbers.add(ticket.trackingNumber);
+  if (ticket.costEstimate === undefined || ticket.costEstimate === null) warnings.push(`${label} will receive a material estimate during the next server migration.`);
+  else if (!Number.isSafeInteger(ticket.costEstimate.amountCents) || ticket.costEstimate.amountCents < 0
+    || typeof ticket.costEstimate.amountDisplay !== 'string' || typeof ticket.costEstimate.basis !== 'string'
+    || typeof ticket.costEstimate.version !== 'string') errors.push(`${label} has an invalid material estimate.`);
   if (!machines.has(ticket.machine)) errors.push(`${label} has an invalid machine.`);
   if ((ticket.machine === 'printer' ? 'P' : 'F') !== ticket.ticketNumber?.[0]) errors.push(`${label} has a queue prefix that does not match its machine.`);
   if (!statuses.has(ticket.status)) errors.push(`${label} has an invalid status.`);

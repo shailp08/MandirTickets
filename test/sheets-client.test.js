@@ -188,7 +188,7 @@ test('completed Drive receipts are reused when ticket confirmation must be retri
       }
       trackCalls++;
       if (trackCalls <= 4) return { ok: false, error: 'The ticket is still being saved.' };
-      return { ok: true, ticket: { ticketNumber: 'P-0042', trackingCode: 'ABCD2345', status: 'queued' } };
+      return { ok: true, ticket: { trackingNumber: 'DM-ABCD2345EFGH', status: 'queued' } };
     },
     xhr: [{ status: 200, body: { id: 'drive_file_12345', size: '4096', mimeType: 'application/pdf', md5Checksum: '0123456789abcdef0123456789abcdef' } }],
     onPost: body => posts.push(body),
@@ -197,7 +197,7 @@ test('completed Drive receipts are reused when ticket confirmation must be retri
     await assert.rejects(createSheetsTicket('https://script.example/exec', details, [artwork]), /without uploading the files again/i);
     const ticket = await createSheetsTicket('https://script.example/exec', details, [artwork]);
 
-    assert.equal(ticket.ticketNumber, 'P-0042');
+    assert.equal(ticket.trackingNumber, 'DM-ABCD2345EFGH');
     assert.equal(beginUploads, 1, 'a confirmed Drive file must not be uploaded a second time');
     assert.equal(uploads.length, 1, 'retry should reuse the cached Drive receipt');
     assert.equal(posts.length, 2, 'retry should resend only the idempotent ticket creation request');
@@ -320,7 +320,7 @@ test('ticket creation preserves file identity metadata from selection through th
   await withBrowserPipeline({
     jsonp(parameters) {
       if (parameters.action === 'beginUpload') return { ok: true, sessionUrl: 'https://www.googleapis.com/upload/metadata-session' };
-      return { ok: true, ticket: { ticketNumber: 'P-0044', trackingCode: 'CDEF4567', status: 'queued' } };
+      return { ok: true, ticket: { trackingNumber: 'DM-CDEF4567GHJK', status: 'queued' } };
     },
     xhr: [{ status: 200, body: { id: 'drive_file_metadata', name: 'pending-name', size: '8192', mimeType: 'application/pdf', md5Checksum: 'abcdef0123456789abcdef0123456789' } }],
     onPost: body => { posted = body; },

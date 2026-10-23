@@ -6,7 +6,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createStore, validateTicket, publicQueue, machines } from '../lib/store.js';
+import { createStore, validateNeededBy, validateTicket, publicQueue, machines } from '../lib/store.js';
 import { createSheetsSync, csv } from '../lib/sheets.js';
 
 const input = { machine:'foam', customerName:'Test Person', department:'Events', purpose:'Stage lettering', email:'requester@example.com', phone:'', quantity:'2', width:'20', length:'36', thickness:'2', neededBy:'Tomorrow' };
@@ -21,6 +21,8 @@ test('concurrent requests keep every ticket and assign independent, persistent q
   const details=validateTicket(input,[]);
   const jobs=await Promise.all(Array.from({length:25},(_,i)=>store.create(details,'request-'+i)));
   assert.equal(new Set(jobs.map(j=>j.ticket.ticketNumber)).size,25);
+  assert.equal(new Set(jobs.map(j=>j.ticket.trackingNumber)).size,25);
+  assert.ok(jobs.every(job => /^DM-[A-HJ-NP-Z2-9]{12}$/.test(job.ticket.trackingNumber)));
   assert.equal(store.list().length,25);
   const duplicate=await store.create(details,'request-0');
   assert.equal(duplicate.duplicate,true); assert.equal(store.list().length,25);
@@ -30,11 +32,18 @@ test('concurrent requests keep every ticket and assign independent, persistent q
   assert.equal((await restored.create(print,'print')).ticket.ticketNumber,'P-0001');
 });
 test('validates contact details, purpose, printer width, quantity and required print files',()=>{
-  for(const patch of [{department:''},{purpose:''},{email:''},{email:'not-an-email'},{width:'-1'},{quantity:'1.5'},{thickness:'0'},{neededBy:'Invalid'}]) assert.throws(()=>validateTicket({...input,...patch},[]));
+  for(const patch of [{department:''},{purpose:''},{email:''},{email:'not-an-email'},{width:'-1'},{quantity:'1.5'},{thickness:'0'},{neededBy:'Invalid'},{neededBy:'2026-02-30'}]) assert.throws(()=>validateTicket({...input,...patch},[]));
   assert.throws(()=>validateTicket({...input,machine:'printer',paperType:'Standard',width:'25'},[{originalName:'a.pdf'}]));
   assert.throws(()=>validateTicket({...input,machine:'printer',paperType:'Standard'},[]));
   assert.equal(validateTicket(input,[]).machine,'foam');
+  assert.equal(validateTicket({...input,neededBy:'2028-02-29'},[]).neededBy,'2028-02-29');
   assert.equal(validateTicket({...input,email:' Person@Example.COM '},[]).email,'person@example.com');
+});
+test('needed-by dates reject Delaware-local past dates while retaining legacy labels', () => {
+  const now = new Date('2026-10-22T04:30:00.000Z'); // 12:30 AM in Delaware.
+  assert.equal(validateNeededBy('2026-10-22', now), '2026-10-22');
+  assert.throws(() => validateNeededBy('2026-10-21', now), /past/i);
+  assert.equal(validateNeededBy('No rush', now), 'No rush');
 });
 test('status changes move queue positions, hide closed jobs, preserve history and private data',async t=>{
   const store=await createStore(await temp(t));
@@ -94,6 +103,39 @@ test('reopening clears the old ready timestamp and survives a restart', async t 
   assert.equal(reopened.completedAt,null);
   assert.equal((await createStore(dir)).list()[0].status,'queued');
 });
+test('material estimate is stored with the ticket and does not change when rates change', async t => {
+  const dir = await temp(t);
+  const firstStore = await createStore(dir);
+  const created = (await firstStore.create(validateTicket(input, []), 'priced')).ticket;
+  assert.equal(created.costEstimate.amountDisplay, '$30.00');
+  const higherPricing = {
+    version: 'future-rates',
+    foamSheetWidthIn: 48,
+    foamSheetLengthIn: 96,
+    foamCentsPerInch: 9999,
+    foamMinimumSheetCents: 9999,
+    printInkCentsPerSquareFoot: 9999,
+    printMaterialCentsPerSquareFoot: { Standard: 9999, Glossy: 9999, Polypropylene: 9999, Adhesive: 9999, Canvas: 9999 },
+  };
+  const restored = await createStore(dir, { pricing: higherPricing });
+  assert.equal(restored.list()[0].costEstimate.amountDisplay, '$30.00');
+  assert.equal(restored.list()[0].costEstimate.version, 'materials-v1');
+});
+test('migration-added ticket codes and estimates force a Sheets re-sync', async t => {
+  const dir = await temp(t);
+  const legacy = {
+    ...validateTicket(input, []), id: 'legacy-id', ticketNumber: 'F-0042', requestKey: 'legacy-request',
+    status: 'queued', createdAt: '2026-10-20T12:00:00.000Z', updatedAt: '2026-10-20T12:00:00.000Z',
+    revision: 3, syncedRevision: 3, history: [],
+  };
+  await fs.writeFile(path.join(dir, 'tickets.json'), JSON.stringify([legacy]));
+  const migrated = await createStore(dir);
+  const ticket = migrated.list()[0];
+  assert.match(ticket.trackingNumber, /^DM-[A-HJ-NP-Z2-9]{12}$/);
+  assert.equal(ticket.costEstimate.amountDisplay, '$30.00');
+  assert.equal(ticket.syncedRevision, 2);
+  assert.equal(ticket.legacyTicketNumberLookup, undefined);
+});
 test('HTTP flow: auth, uploads, receipt, privacy, tracking, status and export',async t=>{
   const dir=await temp(t);
   const child=spawn(process.execPath,['server.js'],{cwd:new URL('..',import.meta.url),env:{...process.env,NODE_ENV:'test',APP_ORIGIN:'https://desk.example',COOKIE_SECURE:'true',CLAMSCAN_PATH:'',PORT:'0',DATA_DIR:dir,ADMIN_PASSWORD:'test-only-secret',SHEETS_WEBHOOK_URL:'',SHEETS_SHARED_SECRET:'',MAX_UPLOAD_BYTES:'1048576',MAX_UPLOAD_FILES:'3',UPLOAD_IDLE_TIMEOUT_MS:'100',UPLOAD_REQUEST_TIMEOUT_MS:'5000'},stdio:['ignore','pipe','pipe']});
@@ -124,7 +166,7 @@ test('HTTP flow: auth, uploads, receipt, privacy, tracking, status and export',a
   })));
   await Promise.all(stalled.map(socket=>once(socket,'close')));
   const response=await fetch(base+'/api/tickets',{method:'POST',headers:{'idempotency-key':'http-test-request-123'},body:form()});
-  assert.equal(response.status,201);const receipt=await response.json();assert.equal(receipt.ticket.ticketNumber,'P-0001');
+  assert.equal(response.status,201);const receipt=await response.json();assert.match(receipt.ticket.trackingNumber,/^DM-[A-HJ-NP-Z2-9]{12}$/);assert.equal(receipt.ticket.ticketNumber,undefined);assert.equal(receipt.ticket.costEstimate.amountDisplay,'$14.00');
   const retry=await fetch(base+'/api/tickets',{method:'POST',headers:{'idempotency-key':'http-test-request-123'},body:form()});assert.equal(retry.status,200);
   const list=await(await fetch(base+'/api/tickets',{headers:{cookie}})).json();assert.equal(list.tickets.length,1);assert.equal(list.sheets.configured,false);assert.equal(list.notifications.configured,false);
   const job=list.tickets[0], download=base+'/api/tickets/'+job.id+'/files/'+job.files[0].storedName;
@@ -148,8 +190,9 @@ test('HTTP flow: auth, uploads, receipt, privacy, tracking, status and export',a
   const oversizedResponse = await fetch(base+'/api/tickets',{method:'POST',headers:{'idempotency-key':'http-oversized-1234'},body:oversized});
   assert.equal(oversizedResponse.status,400); assert.match((await oversizedResponse.json()).error,/1 MB/);
   assert.equal((await fs.readdir(path.join(dir,'uploads'))).length,1);
-  assert.equal((await(await fetch(base+'/api/track/P-0001')).json()).status,'ready');
-  const queue=await(await fetch(base+'/api/queue')).text();assert.ok(!queue.includes('Test Person'));assert.ok(!queue.includes('requester@example.com'));assert.ok(!queue.includes('sample.pdf'));
+  const tracked=await(await fetch(base+'/api/track/'+receipt.ticket.trackingNumber)).json();assert.equal(tracked.status,'ready');assert.equal(tracked.costEstimate.amountDisplay,'$14.00');
+  assert.equal((await fetch(base+'/api/track/P-0001')).status,404);
+  const queue=await(await fetch(base+'/api/queue')).text();assert.ok(!queue.includes('Test Person'));assert.ok(!queue.includes('requester@example.com'));assert.ok(!queue.includes('sample.pdf'));assert.ok(!queue.includes('P-0001'));assert.ok(!queue.includes(receipt.ticket.trackingNumber));
   assert.equal((await fetch(base+'/api/export')).status,401);assert.match(await(await fetch(base+'/api/export',{headers:{cookie}})).text(),/P-0001/);
   assert.equal((await fetch(base+'/api/session',{method:'POST',headers:{origin:'https://other.invalid','content-type':'application/json'},body:'{}'})).status,403);
   assert.equal((await fetch(base+'/api/session',{method:'POST',headers:{origin:base.replace('http:','https:'),'content-type':'application/json'},body:'{}'})).status,403);
