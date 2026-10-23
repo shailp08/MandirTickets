@@ -377,7 +377,6 @@ function App() {
         {machine && <div id="ticket-form"><TicketForm machine={machine} onChangeMachine={chooseMachine} onTicket={setRecentTicket} /></div>}
         <TicketTracker recentTicket={recentTicket} />
       </main>
-      <footer><strong>Delaware Mandir</strong><span>Workshop tickets for poster printing and foam cutting.</span></footer>
     </div>
   );
 }

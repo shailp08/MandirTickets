@@ -773,3 +773,86 @@ test('periodic reconciliation recovers notifications missed by a status-edit loc
   assert.deepEqual({ ...isolated.retryTicketNotifications() }, { sent: 0, pending: 0 });
   assert.equal(sent.length, 2);
 });
+
+test('notification reconciliation isolates an invalid legacy recipient and continues with later tickets', () => {
+  const outbox = outboxBook();
+  const properties = propertiesStore({
+    ADMIN_NOTIFICATION_EMAILS: 'owner@example.com',
+    NOTIFICATION_OUTBOX_STARTED_AT: '2024-01-01T00:00:00.000Z',
+  });
+  const tickets = ['not-an-email', 'valid@example.com'].map((email, index) => {
+    const row = Array(27).fill('');
+    row[0] = `ticket-${index + 1}`;
+    row[1] = `F-010${index}`;
+    row[2] = 'Foam cutting';
+    row[13] = 'ready';
+    row[16] = new Date('2024-02-01T00:00:00.000Z');
+    row[18] = 1;
+    row[21] = 'GitHub Pages';
+    row[22] = email;
+    row[23] = 'in-progress';
+    return row;
+  });
+  const ticketSheet = {
+    getLastRow: () => 3,
+    getRange(rowNumber, column, _rowCount, columns) {
+      if (rowNumber === 2 && column === 1 && columns === 27) return { getValues: () => tickets };
+      return { setValue: value => { tickets[rowNumber - 2][column - 1] = value; } };
+    },
+  };
+  const errors = [];
+  const isolated = loadContext({
+    console: { error: message => errors.push(String(message)), log() {} },
+    PropertiesService: { getScriptProperties: () => properties },
+    SpreadsheetApp: { flush() {} },
+  });
+  isolated.ensureTicketSheet_ = () => ticketSheet;
+
+  assert.equal(isolated.reconcileNotifications_(outbox.book), 1);
+  assert.equal(outbox.rows.length, 2);
+  assert.equal(outbox.rows[1][1], 'valid@example.com');
+  assert.equal(tickets[0][23], 'in-progress', 'the invalid recipient remains recoverable after its email is corrected');
+  assert.equal(tickets[1][23], 'ready');
+  assert.ok(errors.some(message => /ticket-1.*valid customer email/i.test(message)));
+});
+
+test('pending status recovery isolates an invalid legacy recipient and continues with later edits', () => {
+  const outbox = outboxBook();
+  const properties = propertiesStore({
+    ADMIN_NOTIFICATION_EMAILS: 'owner@example.com',
+    PENDING_STATUS_NOTIFICATION_ticket_bad: JSON.stringify({ status: 'ready' }),
+    PENDING_STATUS_NOTIFICATION_ticket_good: JSON.stringify({ status: 'ready' }),
+  });
+  const tickets = new Map([
+    ['ticket_bad', ['ticket_bad', 'F-0200', 'Foam cutting', '', '', '', '', '', '', '', '', '', '', 'ready', '', '', '', '', 1, '', '', '', 'not-an-email', 'in-progress', '', '', '']],
+    ['ticket_good', ['ticket_good', 'F-0201', 'Foam cutting', '', '', '', '', '', '', '', '', '', '', 'ready', '', '', '', '', 1, '', '', '', 'valid@example.com', 'in-progress', '', '', '']],
+  ]);
+  const rowNumbers = new Map([['ticket_bad', 2], ['ticket_good', 3]]);
+  const ticketSheet = {
+    getLastRow: () => 3,
+    getRange(rowNumber, column, _rowCount, columns) {
+      const row = [...tickets.values()][rowNumber - 2];
+      if (column === 1 && columns === 27) return { getValues: () => [row] };
+      return { setValue: value => { row[column - 1] = value; } };
+    },
+  };
+  const errors = [];
+  const isolated = loadContext({
+    console: { error: message => errors.push(String(message)), log() {} },
+    PropertiesService: { getScriptProperties: () => properties },
+    SpreadsheetApp: { flush() {} },
+  });
+  const originalFindRow = isolated.findRow_;
+  isolated.ensureTicketSheet_ = () => ticketSheet;
+  isolated.findRow_ = (sheet, column, value) => sheet === ticketSheet && column === 1
+    ? rowNumbers.get(String(value)) || 0
+    : originalFindRow(sheet, column, value);
+
+  isolated.reconcilePendingStatusEdits_(outbox.book, properties);
+
+  assert.equal(outbox.rows.length, 2);
+  assert.equal(outbox.rows[1][1], 'valid@example.com');
+  assert.equal(properties.getProperty('PENDING_STATUS_NOTIFICATION_ticket_bad') !== null, true);
+  assert.equal(properties.getProperty('PENDING_STATUS_NOTIFICATION_ticket_good'), null);
+  assert.ok(errors.some(message => /ticket_bad.*valid customer email/i.test(message)));
+});

@@ -970,47 +970,51 @@ function reconcileNotifications_(book) {
   }
   var queued = 0;
   tickets.forEach(function(row, rowIndex) {
-    if (String(row[21]) !== 'GitHub Pages' || new Date(row[16]) < startedAt) return;
-    var requestKey = String(row[20]);
-    var adminId = 'new-ticket:' + requestKey;
-    if (requestKey && !ids[adminId]) {
-      var request = {
-        requestKey: requestKey,
-        machine: String(row[2]) === MACHINES.printer ? 'printer' : 'foam',
-        customerName: String(row[3]),
-        department: String(row[4]),
-        purpose: String(row[5]),
-        neededBy: String(row[12]),
-        email: String(row[22]),
-        quantity: row[7],
-        paperType: String(row[8]),
-        width: row[9],
-        length: row[10],
-        thickness: row[11],
-        trackingNumber: row[19] ? publicTrackingNumber_(row[19]) : String(row[1])
-      };
-      try { request.costEstimate = estimateFromRow_(row); }
-      catch (_estimateError) { request.costEstimate = null; }
-      if (notifyAdminsOfNewTicket_(request, String(row[1]), properties, book, true)) {
-        ids[adminId] = true;
-        queued++;
-      }
-    }
-    var status = String(row[13]).trim().toLowerCase();
-    var revision = Math.max(1, Number(row[18]) || 1);
-    var statusId = 'status:' + String(row[0]) + ':' + String(revision) + ':' + status;
-    var lastNotifiedStatus = String(row[23] || '').trim().toLowerCase();
-    if (status !== lastNotifiedStatus && STATUSES.indexOf(status) !== -1) {
-      if (!ids[statusId]) {
-        var nextRevision = revision + 1;
-        if (notifyCustomerOfStatus_(row, status, nextRevision, book, true)) {
-          ids['status:' + String(row[0]) + ':' + String(nextRevision) + ':' + status] = true;
+    try {
+      if (String(row[21]) !== 'GitHub Pages' || new Date(row[16]) < startedAt) return;
+      var requestKey = String(row[20]);
+      var adminId = 'new-ticket:' + requestKey;
+      if (requestKey && !ids[adminId]) {
+        var request = {
+          requestKey: requestKey,
+          machine: String(row[2]) === MACHINES.printer ? 'printer' : 'foam',
+          customerName: String(row[3]),
+          department: String(row[4]),
+          purpose: String(row[5]),
+          neededBy: String(row[12]),
+          email: String(row[22]),
+          quantity: row[7],
+          paperType: String(row[8]),
+          width: row[9],
+          length: row[10],
+          thickness: row[11],
+          trackingNumber: row[19] ? publicTrackingNumber_(row[19]) : String(row[1])
+        };
+        try { request.costEstimate = estimateFromRow_(row); }
+        catch (_estimateError) { request.costEstimate = null; }
+        if (notifyAdminsOfNewTicket_(request, String(row[1]), properties, book, true)) {
+          ids[adminId] = true;
           queued++;
         }
-        ticketSheet.getRange(firstRow + rowIndex, 18).setValue(new Date());
-        ticketSheet.getRange(firstRow + rowIndex, 19).setValue(nextRevision);
       }
-      ticketSheet.getRange(firstRow + rowIndex, 24).setValue(status);
+      var status = String(row[13]).trim().toLowerCase();
+      var revision = Math.max(1, Number(row[18]) || 1);
+      var statusId = 'status:' + String(row[0]) + ':' + String(revision) + ':' + status;
+      var lastNotifiedStatus = String(row[23] || '').trim().toLowerCase();
+      if (status !== lastNotifiedStatus && STATUSES.indexOf(status) !== -1) {
+        if (!ids[statusId]) {
+          var nextRevision = revision + 1;
+          if (notifyCustomerOfStatus_(row, status, nextRevision, book, true)) {
+            ids['status:' + String(row[0]) + ':' + String(nextRevision) + ':' + status] = true;
+            queued++;
+          }
+          ticketSheet.getRange(firstRow + rowIndex, 18).setValue(new Date());
+          ticketSheet.getRange(firstRow + rowIndex, 19).setValue(nextRevision);
+        }
+        ticketSheet.getRange(firstRow + rowIndex, 24).setValue(status);
+      }
+    } catch (error) {
+      console.error('Could not reconcile notifications for ticket ' + String(row[0] || row[1] || firstRow + rowIndex) + ': ' + String(error && error.message || error));
     }
   });
   return queued;
@@ -1022,32 +1026,36 @@ function reconcilePendingStatusEdits_(book, properties) {
   var sheet = ensureTicketSheet_(book);
   Object.keys(pending).filter(function(key) { return key.indexOf(prefix) === 0; }).forEach(function(key) {
     var ticketId = key.slice(prefix.length);
-    var rowNumber = findRow_(sheet, 1, ticketId);
-    if (!rowNumber) {
-      properties.deleteProperty(key);
-      return;
-    }
-    var row = sheet.getRange(rowNumber, 1, 1, HEADERS.length).getValues()[0];
-    var status = String(row[13] || '').trim().toLowerCase();
-    if (STATUSES.indexOf(status) === -1) return;
-    if (String(row[23] || '').trim().toLowerCase() === status) {
-      properties.deleteProperty(key);
-      return;
-    }
-    var currentRevision = Math.max(1, Number(row[18]) || 1);
-    var existingId = 'status:' + String(row[0]) + ':' + String(currentRevision) + ':' + status;
-    if (findRow_(ensureNotificationSheet_(book), 1, existingId)) {
+    try {
+      var rowNumber = findRow_(sheet, 1, ticketId);
+      if (!rowNumber) {
+        properties.deleteProperty(key);
+        return;
+      }
+      var row = sheet.getRange(rowNumber, 1, 1, HEADERS.length).getValues()[0];
+      var status = String(row[13] || '').trim().toLowerCase();
+      if (STATUSES.indexOf(status) === -1) return;
+      if (String(row[23] || '').trim().toLowerCase() === status) {
+        properties.deleteProperty(key);
+        return;
+      }
+      var currentRevision = Math.max(1, Number(row[18]) || 1);
+      var existingId = 'status:' + String(row[0]) + ':' + String(currentRevision) + ':' + status;
+      if (findRow_(ensureNotificationSheet_(book), 1, existingId)) {
+        sheet.getRange(rowNumber, 24).setValue(status);
+        properties.deleteProperty(key);
+        return;
+      }
+      var revision = currentRevision + 1;
+      notifyCustomerOfStatus_(row, status, revision, book, true);
+      var updatedAt = new Date();
+      sheet.getRange(rowNumber, 18).setValue(updatedAt);
+      sheet.getRange(rowNumber, 19).setValue(revision);
       sheet.getRange(rowNumber, 24).setValue(status);
       properties.deleteProperty(key);
-      return;
+    } catch (error) {
+      console.error('Could not reconcile pending status notification for ticket ' + ticketId + ': ' + String(error && error.message || error));
     }
-    var revision = currentRevision + 1;
-    notifyCustomerOfStatus_(row, status, revision, book, true);
-    var updatedAt = new Date();
-    sheet.getRange(rowNumber, 18).setValue(updatedAt);
-    sheet.getRange(rowNumber, 19).setValue(revision);
-    sheet.getRange(rowNumber, 24).setValue(status);
-    properties.deleteProperty(key);
   });
 }
 

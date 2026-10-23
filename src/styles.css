@@ -442,6 +442,8 @@ label > span,
 input,
 select,
 textarea {
+  min-width: 0;
+  max-width: 100%;
   width: 100%;
   border: 2px solid var(--control-line);
   border-radius: 0;
@@ -454,6 +456,14 @@ input,
 select {
   min-height: 56px;
   padding: 0 15px;
+}
+
+input[type="date"] {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
 }
 
 textarea {
@@ -823,28 +833,6 @@ progress {
   margin-bottom: 0;
 }
 
-footer {
-  min-height: 38svh;
-  display: grid;
-  align-content: end;
-  gap: 24px;
-  padding: clamp(3rem, 7vw, 6rem) var(--margin);
-  background: var(--accent);
-  color: var(--ink);
-}
-
-footer strong {
-  max-width: 100%;
-  font-size: clamp(3rem, 10vw, 9rem);
-  font-weight: 780;
-  letter-spacing: -0.065em;
-  line-height: 0.82;
-}
-
-footer span {
-  font-size: 17px;
-}
-
 @media (hover: hover) and (pointer: fine) {
   .header-note:hover {
     color: var(--accent);
@@ -1044,15 +1032,6 @@ footer span {
     padding-block: 64px;
   }
 
-  footer {
-    min-height: 30svh;
-  }
-
-  footer strong {
-    max-width: 9ch;
-    font-size: clamp(3.25rem, 16vw, 5.5rem);
-    line-height: 0.88;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1072,8 +1051,7 @@ footer span {
   .change-machine,
   .receipt-actions,
   .tracker-section,
-  .deployment-banner,
-  footer {
+  .deployment-banner {
     display: none !important;
   }
 

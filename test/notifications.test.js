@@ -120,6 +120,38 @@ test('failed delivery remains in the persistent retry queue without rejecting th
   assert.equal(recovered[0].to, ticket.email);
 });
 
+test('one failed admin recipient does not block the others or hide the outstanding failure', async t => {
+  let clock = new Date('2026-10-22T12:00:00.000Z');
+  let ownerAttempts = 0;
+  const sent = [];
+  const service = await createNotificationService(await temporaryDirectory(t), config, {
+    now: () => clock,
+    reportError() {},
+    createTransport: () => ({
+      async sendMail(message) {
+        if (message.to === 'owner@example.com' && ownerAttempts++ === 0) throw new Error('Owner mailbox unavailable');
+        sent.push(message.to);
+      },
+      close() {},
+    }),
+  });
+  t.after(() => service.close());
+
+  await service.ticketCreated(ticket);
+  await service.flush();
+  await service.flush();
+
+  assert.deepEqual(sent, ['helper@example.com']);
+  assert.equal(service.state().pending, 1);
+  assert.match(service.state().lastError, /retry/i);
+
+  clock = new Date('2026-10-22T12:00:31.000Z');
+  await service.flush();
+  assert.deepEqual(sent, ['helper@example.com', 'owner@example.com']);
+  assert.equal(service.state().pending, 0);
+  assert.equal(service.state().lastError, null);
+});
+
 test('startup reconciliation recovers post-activation crash gaps without back-emailing old tickets', async t => {
   const directory = await temporaryDirectory(t);
   let clock = new Date('2026-10-22T12:00:00.000Z');
@@ -160,4 +192,5 @@ test('notification service can remain disabled until SMTP is configured', async 
   assert.equal(service.state().pending, 0);
   await assert.rejects(createNotificationService(directory, { host: 'smtp.example.com' }), /NOTIFICATION_FROM/);
   await assert.rejects(createNotificationService(directory, { ...config, adminEmails: '' }), /ADMIN_NOTIFICATION_EMAILS/);
+  await assert.rejects(createNotificationService(directory, { ...config, from: '   ' }), /NOTIFICATION_FROM/);
 });
