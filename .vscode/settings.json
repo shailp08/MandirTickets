@@ -1,0 +1,9 @@
+{
+    "circuitpythonsync.cpbaseversion": "10",
+    "circuitpythonsync.cpfullversion": "10.3.1",
+    "circuitpythonsync.curlibtag": "20261023",
+    "python.analysis.extraPaths": [
+        "/Users/shailpatel/Documents/MandirTickets/libArchive/libstubs",
+        "/Users/shailpatel/Library/Application Support/Code/User/globalStorage/padgettholdings.circuitpythonsync/stubs/circuitpython_stubs-10.3.1"
+    ]
+}

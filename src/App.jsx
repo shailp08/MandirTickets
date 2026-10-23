@@ -51,11 +51,11 @@ const createRequestKey = () => Array.from(
 function Header() {
   return (
     <header className="site-header">
-      <a className="brand" href={location.pathname} aria-label="Delaware Mandir workshop ticket home">
+      <a className="brand" data-nav-entry href={location.pathname} aria-label="Delaware Mandir workshop ticket home">
         <strong>Delaware Mandir</strong>
         <span>Workshop tickets</span>
       </a>
-      <a className="header-note" href="#tracker">Track a ticket</a>
+      <a className="header-note" data-nav-entry href="#tracker">Track a ticket</a>
     </header>
   );
 }
@@ -75,19 +75,27 @@ function CostEstimate({ estimate }) {
 function MachineChoice({ value, onChange }) {
   return (
     <section className="machine-step" aria-labelledby="ticket-question">
-      <h1 id="ticket-question" tabIndex="-1">What do you need help with?</h1>
-      <p className="intro">Choose one option. The next page will ask for your contact information and job details.</p>
-      <div className="machine-choices" role="group" aria-label="Choose a ticket type">
-        <button className={value === 'printer' ? 'machine-choice selected' : 'machine-choice'} type="button" aria-labelledby="poster-printing-title" aria-describedby="poster-printing-description" onClick={() => onChange('printer')}>
-          <span className="choice-copy"><strong id="poster-printing-title">Poster printing</strong><small id="poster-printing-description">Posters, signs, stickers, and canvas up to 24 inches wide</small></span>
-          <span className="choice-select" aria-hidden="true">Choose poster printing</span>
-        </button>
-        <button className={value === 'foam' ? 'machine-choice selected' : 'machine-choice'} type="button" aria-labelledby="foam-cutting-title" aria-describedby="foam-cutting-description" onClick={() => onChange('foam')}>
-          <span className="choice-copy"><strong id="foam-cutting-title">Foam cutting</strong><small id="foam-cutting-description">Foam letters, shapes, signs, and display pieces</small></span>
-          <span className="choice-select" aria-hidden="true">Choose foam cutting</span>
-        </button>
+      <div className="hero-copy">
+        <h1 id="ticket-question" data-rise style={{ '--i': 0 }} tabIndex="-1">Choose what you need</h1>
+        <p className="intro" data-rise style={{ '--i': 1 }}>Start a request for poster printing or foam cutting. We’ll only show the questions for that job.</p>
+        <p className="hero-detail" data-rise style={{ '--i': 2 }}>After you submit, you’ll get one ticket code to save.</p>
       </div>
-      <p className="help-note">Not sure which one to choose? Ask a workshop volunteer for help.</p>
+      <div className="machine-stage">
+        <div className="machine-panel" data-ticket-open>
+          <h2>Pick one service</h2>
+          <div className="machine-choices" role="group" aria-label="Choose a ticket type">
+            <button className={value === 'printer' ? 'machine-choice selected' : 'machine-choice'} data-choice type="button" aria-labelledby="poster-printing-title" aria-describedby="poster-printing-description" onClick={() => onChange('printer')}>
+              <span className="choice-copy"><strong id="poster-printing-title">Poster printing</strong><small id="poster-printing-description">Posters, signs, stickers, and canvas up to 24 inches wide</small></span>
+              <span className="choice-select" aria-hidden="true">Choose</span>
+            </button>
+            <button className={value === 'foam' ? 'machine-choice selected' : 'machine-choice'} data-choice type="button" aria-labelledby="foam-cutting-title" aria-describedby="foam-cutting-description" onClick={() => onChange('foam')}>
+              <span className="choice-copy"><strong id="foam-cutting-title">Foam cutting</strong><small id="foam-cutting-description">Foam letters, shapes, signs, and display pieces</small></span>
+              <span className="choice-select" aria-hidden="true">Choose</span>
+            </button>
+          </div>
+          <p className="help-note">Not sure which one to choose? Ask a workshop volunteer for help.</p>
+        </div>
+      </div>
     </section>
   );
 }
@@ -205,8 +213,8 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
   if (ticket) {
     return (
       <section className="receipt-card" id="ticket-receipt" tabIndex="-1" aria-labelledby="receipt-title">
-        <p className="success-label">Ticket submitted</p>
-        <h2 id="receipt-title">Your request was sent.</h2>
+        <h2 id="receipt-title">Ticket submitted</h2>
+        <p>Your request was sent.</p>
         <p className="receipt-label">Ticket code</p>
         <strong className="receipt-number receipt-code">{ticket.trackingNumber || ticket.trackingCode || ticket.ticketNumber}</strong>
         <p>{machineName(ticket)} · {ticket.department}{ticket.position ? ` · Number in line ${ticket.position}` : ''}</p>
@@ -224,7 +232,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
   return (
     <section className="form-section" aria-labelledby="form-title">
       <div className="form-heading">
-        <button className="change-machine" type="button" onClick={() => { onChangeMachine(null); focusSection('ticket-question'); }}>← Back to request types</button>
+        <button className="change-machine" type="button" onClick={() => { onChangeMachine(null); focusSection('ticket-question'); }}>Change request type</button>
         <p className="selected-machine">Request type: <strong>{MACHINES[machine]}</strong></p>
         <h1 id="form-title" tabIndex="-1">Tell us about your job</h1>
         <p>Fill in the form below. Fields marked “Required” must be completed.</p>
@@ -234,7 +242,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
         <input type="hidden" name="machine" value={machine} />
 
         <fieldset className="form-card">
-          <legend>1. Your information</legend>
+          <legend>Your information</legend>
           <div className="field-grid">
             <label>Your name <span>Required</span><input name="customerName" autoComplete="name" required maxLength="100" /></label>
             <label>Department or group <span>Required</span><input name="department" required maxLength="100" placeholder="Example: Events or Youth" /></label>
@@ -246,7 +254,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
         </fieldset>
 
         <fieldset className="form-card">
-          <legend>2. Job details</legend>
+          <legend>Job details</legend>
           <div className="field-grid details-grid">
             {machine === 'printer' ? (
               <label>Print material <span>Required</span><select name="paperType" defaultValue="Standard" required><option value="Polypropylene">Durable poster material</option><option value="Adhesive">Sticker material</option><option value="Canvas">Canvas</option><option value="Glossy">Glossy photo paper</option><option value="Standard">Standard poster paper</option></select></label>
@@ -349,6 +357,11 @@ function App() {
   const [machine, setMachine] = useState(null);
   const [recentTicket, setRecentTicket] = useState(null);
 
+  useEffect(() => {
+    document.documentElement.classList.add('js');
+    return () => document.documentElement.classList.remove('js');
+  }, []);
+
   const chooseMachine = value => {
     setMachine(value);
     if (value) focusSection('form-title');
@@ -364,7 +377,7 @@ function App() {
         {machine && <div id="ticket-form"><TicketForm machine={machine} onChangeMachine={chooseMachine} onTicket={setRecentTicket} /></div>}
         <TicketTracker recentTicket={recentTicket} />
       </main>
-      <footer>Delaware Mandir Workshop Tickets</footer>
+      <footer><strong>Delaware Mandir</strong><span>Workshop tickets for poster printing and foam cutting.</span></footer>
     </div>
   );
 }
