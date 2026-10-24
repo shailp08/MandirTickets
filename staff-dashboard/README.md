@@ -6,7 +6,7 @@ Authenticated staff interface for the MandirTickets backend. Printing and foam-c
 
 Use Node 22+. Install dependencies with `npm ci`. From the parent `MandirTickets` folder run `npm run build:staff`, then start that server. The dashboard is served at `/staff/`, alongside its authenticated API.
 
-See `../docs/workshop-setup.md` for the complete online rollout. GitHub Pages hosts the staff frontend at `/MandirTickets/staff/`, but it cannot host the private staff server. Set the repository variable `STAFF_API_URL` to the secure staff-server origin after deploying that server; no passwords or shared secrets belong in `REACT_APP_` variables. The default interface never silently switches to mock tickets.
+See `../docs/workshop-setup.md` for the complete online rollout. GitHub Pages hosts the staff frontend at `/MandirTickets/staff/`. The Pages workflow supplies the existing Google Apps Script URL directly to the dashboard, so the review queue, status updates, and material ledger work without a separate Node host after the updated Apps Script source is published. The optional private-server mode remains available through `STAFF_API_URL`.
 
 ## Tests
 

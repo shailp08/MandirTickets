@@ -66,6 +66,8 @@ function googleHarness() {
 test('Google staff operations authenticate, allow flexible order, save usage once, and preserve existing receipt fields',()=>{
   const {ctx,call,getRows}=googleHarness();
   assert.equal(call('staffList',{},'bad').status,401);
+  const publicList=ctx.doPost({postData:{contents:JSON.stringify({action:'staffList',publicStaff:true})}});
+  assert.equal(publicList.ok,true); assert.equal(publicList.tickets.length,3);
   const list=call('staffList'); assert.equal(list.tickets.length,3);
   assert.equal(list.tickets[0].files[0].url,'https://drive.google.com/file/d/abcdefghijklmnop/view');
   assert.equal(call('staffUpdate',{id:'b',status:'in-progress',expectedRevision:1}).ok,true);

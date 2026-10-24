@@ -43,6 +43,7 @@ jobs:
           PUBLIC_URL: /MandirTickets/staff
           REACT_APP_REQUEST_SITE_URL: /MandirTickets/
           REACT_APP_WORKSHOP_API_URL: ${{ vars.STAFF_API_URL }}
+          REACT_APP_GOOGLE_SCRIPT_URL: ${{ vars.VITE_GOOGLE_SCRIPT_URL }}
       - name: Configure Pages
         uses: actions/configure-pages@v6
       - name: Upload Pages artifact

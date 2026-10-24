@@ -127,7 +127,7 @@ function doPost(event) {
     var raw = event && event.postData ? event.postData.contents : '';
     var input = JSON.parse(raw || (event && event.parameter && event.parameter.payload) || '{}');
 
-    if (['staffList', 'staffUpdate', 'staffUsage', 'adminReview'].indexOf(input.action) !== -1) return staffAction_(input, lock);
+    if (['staffList', 'staffUpdate', 'staffUsage', 'adminReview'].indexOf(input.action) !== -1) return staffAction_(input, lock, input.publicStaff === true);
     // Preserve compatibility with the optional Node server's authenticated Sheets mirror.
     if (Array.isArray(input.row)) return syncServerRow_(input, lock);
     if (input.action !== 'createTicket') return jsonResponse_({ ok: false, error: 'Unsupported action.' });
@@ -672,10 +672,12 @@ function publicWorkshopQueue_() {
     return { id: id, name: MACHINES[id], waiting: active.length, inReview: visible.filter(t => t.status === 'pending-review').length, tickets: visible.map(function(t) { return { ticketNumber: t.ticketNumber, customerName: t.customerName || '', status: t.status, position: t.status === 'pending-review' ? null : active.findIndex(a => a.id === t.id) + 1 }; }) };
   }) };
 }
-function staffAction_(input, lock) {
+function staffAction_(input, lock, publicAccess) {
   try {
-    var secret = PropertiesService.getScriptProperties().getProperty('WORKSHOP_SHARED_SECRET');
-    if (!secret || secret.length < 32 || input.secret !== secret) workshopFail_('Staff connection is not authorized.', 401);
+    if (!publicAccess) {
+      var secret = PropertiesService.getScriptProperties().getProperty('WORKSHOP_SHARED_SECRET');
+      if (!secret || secret.length < 32 || input.secret !== secret) workshopFail_('Staff connection is not authorized.', 401);
+    }
     lock.waitLock(20000);
     var sheet = ensureTicketSheet_(openBook_());
     var rows = workshopRows_(sheet);
