@@ -6,6 +6,7 @@
   "scripts": {
     "audit:data": "node scripts/audit-data.js",
     "build": "vite build",
+    "build:pages": "npm run build && npm run build:staff && node scripts/package-pages.js",
     "check": "npm run build:all && npm run test:all && npm run audit:data",
     "prestart": "npm run build:all",
     "start": "node server.js",

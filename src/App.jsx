@@ -61,7 +61,7 @@ function Header() {
       <a className="brand" href={location.pathname} aria-label="Mandir workshop ticket home">
         <span><strong>Mandir</strong><small>Workshop tickets</small></span>
       </a>
-      <nav className="header-links"><a className="header-note" href="#queue">View queue</a></nav>
+      <nav className="header-links" aria-label="Page navigation"><a className="header-note" href="#queue">View queue</a><a className="header-note" href="./staff/">Staff</a></nav>
     </header>
   );
 }
