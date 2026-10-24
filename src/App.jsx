@@ -1,4 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
+import {
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  FileArrowUp,
+  Printer,
+  Scissors,
+  UploadSimple,
+  X,
+} from '@phosphor-icons/react';
 import QueueBoard from './QueueBoard.jsx';
 import { createSheetsTicket, validateSheetsFiles } from './sheets-api.js';
 
@@ -42,16 +52,16 @@ const focusSection = id => window.setTimeout(() => {
 
 const createRequestKey = () => Array.from(
   crypto.getRandomValues(new Uint8Array(16)),
-  value => value.toString(16).padStart(2, '0'), // taste-skill-ignore: hexadecimal byte padding.
+  value => value.toString(16).padStart(2, '0'),
 ).join('');
 
 function Header() {
   return (
     <header className="site-header">
       <a className="brand" href={location.pathname} aria-label="Mandir workshop ticket home">
-        <strong>Mandir Workshop</strong>
+        <span><strong>Mandir</strong><small>Workshop tickets</small></span>
       </a>
-      <nav className="header-links" aria-label="Page navigation"><a className="header-note" href="#queue">Queue</a></nav>
+      <nav className="header-links"><a className="header-note" href="#queue">View queue</a></nav>
     </header>
   );
 }
@@ -59,28 +69,19 @@ function Header() {
 function MachineChoice({ value, onChange }) {
   return (
     <section className="machine-step" aria-labelledby="ticket-question">
-      <div className="hero-paper" aria-hidden="true" />
-      <div className="hero-ink" aria-hidden="true" />
-      <h1 className="hero-title" id="ticket-question" tabIndex="-1">
-        <span className="headline-line"><span data-line style={{ '--i': 0 }}>Start a</span></span>
-        <span className="headline-line seam-line">
-          <span className="seam-copy seam-copy-top" data-line style={{ '--i': 1 }}>workshop ticket</span>
-          <span className="seam-copy seam-copy-bottom" aria-hidden="true">workshop ticket</span>
-        </span>
-      </h1>
-      <div className="hero-actions">
-        <p className="hero-copy">Choose a service. A karyakar reviews every request before it enters the work queue.</p>
-        <div className="machine-choices" role="group" aria-label="Choose a ticket type">
-          <button className={value === 'printer' ? 'machine-choice selected' : 'machine-choice'} type="button" aria-labelledby="poster-printing-title" aria-describedby="poster-printing-description" onClick={() => onChange('printer')} style={{ '--i': 0 }}>
-            <span className="choice-copy"><strong id="poster-printing-title">Poster printing</strong><small id="poster-printing-description">Posters, signs, stickers, and canvas up to 24 inches wide</small></span>
-            <span className="choice-select" aria-hidden="true">Start request</span>
-          </button>
-          <button className={value === 'foam' ? 'machine-choice selected' : 'machine-choice'} type="button" aria-labelledby="foam-cutting-title" aria-describedby="foam-cutting-description" onClick={() => onChange('foam')} style={{ '--i': 1 }}>
-            <span className="choice-copy"><strong id="foam-cutting-title">Foam cutting</strong><small id="foam-cutting-description">Foam letters, shapes, signs, and display pieces</small></span>
-            <span className="choice-select" aria-hidden="true">Start request</span>
-          </button>
-        </div>
-        <a className="queue-jump" href="#queue">View the workshop queue</a>
+      <p className="eyebrow">Open a workshop ticket</p>
+      <h1 id="ticket-question" tabIndex="-1">What are you opening a ticket for?</h1>
+      <div className="machine-choices" role="group" aria-label="Choose a ticket type">
+        <button className={value === 'printer' ? 'machine-choice selected' : 'machine-choice'} type="button" aria-labelledby="poster-printing-title" aria-describedby="poster-printing-description" onClick={() => onChange('printer')}>
+          <span className="choice-icon"><Printer size={34} weight="duotone" aria-hidden="true" /></span>
+          <span className="choice-copy"><strong id="poster-printing-title">Poster printing</strong><small id="poster-printing-description">Posters, signs, stickers, and canvas up to 24 inches wide</small></span>
+          <span className="choice-select" aria-hidden="true">Select <ArrowRight weight="bold" /></span>
+        </button>
+        <button className={value === 'foam' ? 'machine-choice selected' : 'machine-choice'} type="button" aria-labelledby="foam-cutting-title" aria-describedby="foam-cutting-description" onClick={() => onChange('foam')}>
+          <span className="choice-icon"><Scissors size={34} weight="duotone" aria-hidden="true" /></span>
+          <span className="choice-copy"><strong id="foam-cutting-title">Foam cutting</strong><small id="foam-cutting-description">Foam letters, shapes, signs, and display pieces</small></span>
+          <span className="choice-select" aria-hidden="true">Select <ArrowRight weight="bold" /></span>
+        </button>
       </div>
     </section>
   );
@@ -199,7 +200,8 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
   if (ticket) {
     return (
       <section className="receipt-card" id="ticket-receipt" tabIndex="-1" aria-labelledby="receipt-title">
-        <p className="receipt-status">Ticket submitted</p>
+        <span className="receipt-check"><Check size={25} weight="bold" aria-hidden="true" /></span>
+        <p className="eyebrow">Ticket submitted</p>
         <h2 id="receipt-title">Your request is awaiting review.</h2>
         <p className="receipt-label">Ticket number</p>
         <strong className="receipt-number">{ticket.ticketNumber}</strong>
@@ -207,8 +209,8 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
         <p>{machineName(ticket)} · {ticket.department}{ticket.position ? ` · ${ticket.position - 1} ${ticket.position === 2 ? 'job' : 'jobs'} ahead of you` : ''}</p>
         <p className="receipt-help">A karyakar will check your files and dimensions before your request joins the staff queue. Save the ticket number{ticket.trackingCode ? ' and tracking code' : ''}. You will need them to check progress or collect the finished job.</p>
         <div className="receipt-actions">
-          <button className="button button-secondary" type="button" onClick={() => window.print()}>Print receipt</button>
-          <button className="button button-primary" type="button" onClick={startAnother}>Open another ticket</button>
+          <button className="button button-secondary" type="button" onClick={() => window.print()}><Printer aria-hidden="true" /> Print receipt</button>
+          <button className="button button-primary" type="button" onClick={startAnother}>Open another ticket <ArrowRight aria-hidden="true" /></button>
         </div>
       </section>
     );
@@ -217,9 +219,10 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
   return (
     <section className="form-section" aria-labelledby="form-title">
       <div className="form-heading">
-        <button className="change-machine" type="button" onClick={() => { onChangeMachine(null); focusSection('ticket-question'); }}>Change service</button>
-        <h2 id="form-title" tabIndex="-1">{MACHINES[machine]} request</h2>
-        <p>Send one ticket for each item or design. Every field marked required must be completed.</p>
+        <button className="change-machine" type="button" onClick={() => { onChangeMachine(null); focusSection('ticket-question'); }}><ArrowLeft aria-hidden="true" /> Change request type</button>
+        <span className="selected-machine">{machine === 'printer' ? <Printer aria-hidden="true" /> : <Scissors aria-hidden="true" />}{MACHINES[machine]}</span>
+        <h2 id="form-title" tabIndex="-1">Tell us about the job.</h2>
+        <p>Required fields are marked. Send one ticket for each item or design.</p>
       </div>
 
       <form ref={formRef} onSubmit={submit} aria-busy={submitting}>
@@ -247,6 +250,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
 
           <label className="upload-label">Artwork files <span>{machine === 'printer' ? 'Required' : 'Optional'}</span></label>
           <div className="dropzone" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
+            <UploadSimple size={30} weight="duotone" aria-hidden="true" />
             <strong>Choose files or drop them here</strong>
             <small>PDF, SVG, DXF, PNG, JPG, or TIFF · up to 200 MB total</small>
             <input type="file" name="files" accept=".pdf,.svg,.dxf,.png,.jpg,.jpeg,.tif,.tiff" multiple onChange={event => { addFiles(event.target.files); event.target.value = ''; }} aria-label="Upload artwork files" />
@@ -255,7 +259,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
           {files.length > 0 && (
             <ul className="file-list">
               {files.map((file, index) => (
-                <li key={`${file.name}-${file.lastModified}-${index}`}><span><strong>{file.name}</strong><small>{(file.size / 1024 / 1024).toFixed(2)} MB</small></span><button type="button" onClick={() => setFiles(current => current.filter((_, itemIndex) => itemIndex !== index))}>Remove<span className="visually-hidden"> {file.name}</span></button></li>
+                <li key={`${file.name}-${file.lastModified}-${index}`}><FileArrowUp aria-hidden="true" /><span><strong>{file.name}</strong><small>{(file.size / 1024 / 1024).toFixed(2)} MB</small></span><button type="button" onClick={() => setFiles(current => current.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${file.name}`}><X aria-hidden="true" /></button></li>
               ))}
             </ul>
           )}
@@ -268,7 +272,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
 
         <div className="submit-area">
           <p>Your ticket is saved before you receive a ticket number. A karyakar reviews each request before it enters the work queue. Approved jobs normally follow submission order, but staff may group jobs by material or adjust the working order. Timing depends on staff and material availability.</p>
-          <button className="button button-primary submit-button" type="submit" disabled={submitting}>{submitting ? 'Submitting ticket' : canRetry ? 'Try again' : 'Submit ticket'}</button>
+          <button className="button button-primary submit-button" type="submit" disabled={submitting}>{submitting ? 'Submitting ticket' : canRetry ? 'Try again' : 'Submit ticket'} <ArrowRight weight="bold" aria-hidden="true" /></button>
         </div>
         {submitting && <progress max="100" value={progress} aria-label={`Upload progress: ${progress}%`} />}
         {notice.text && <p className={notice.error ? 'notice error' : 'notice'} role={notice.error ? 'alert' : 'status'}>{notice.text}</p>}
@@ -296,7 +300,7 @@ function App() {
         {machine && <div id="ticket-form"><TicketForm machine={machine} onChangeMachine={chooseMachine} onTicket={setRecentTicket} /></div>}
         <QueueBoard apiBase={API_BASE_URL} sheetsUrl={SHEETS_API_URL} preview={staticPreview} recentTicket={recentTicket} />
       </main>
-      <footer><strong>Mandir Workshop</strong><span>Poster printing and foam cutting requests.</span><a href="#main">Back to top</a></footer>
+      <footer><strong>Mandir Workshop Tickets</strong><span>Poster printing and foam cutting requests in one place.</span></footer>
     </div>
   );
 }
