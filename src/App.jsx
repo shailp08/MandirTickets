@@ -208,7 +208,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
         <strong className="receipt-number">{ticket.ticketNumber}</strong>
         {ticket.trackingCode && <><p className="receipt-label">Tracking code</p><strong className="tracking-code">{ticket.trackingCode}</strong></>}
         <p>{machineName(ticket)} · {ticket.department}{ticket.position ? ` · ${ticket.position - 1} ${ticket.position === 2 ? 'job' : 'jobs'} ahead of you` : ''}</p>
-        <p className="receipt-help">An admin will check your files and dimensions before your request joins the staff queue. Save the ticket number{ticket.trackingCode ? ' and tracking code' : ''}. You will need them to check progress or collect the finished job.</p>
+        <p className="receipt-help">A karyakar will check your files and dimensions before your request joins the staff queue. Save the ticket number{ticket.trackingCode ? ' and tracking code' : ''}. You will need them to check progress or collect the finished job.</p>
         <div className="receipt-actions">
           <button className="button button-secondary" type="button" onClick={() => window.print()}><Printer aria-hidden="true" /> Print receipt</button>
           <button className="button button-primary" type="button" onClick={startAnother}>Open another ticket <ArrowRight aria-hidden="true" /></button>
@@ -247,7 +247,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
             <label>Width <span>Inches</span><input name="width" type="number" min="0.01" max={machine === 'printer' ? '24' : '10000'} step="any" placeholder={machine === 'printer' ? '24' : '20'} required /></label>
             <label>Length <span>Inches</span><input name="length" type="number" min="0.01" max="100000" step="any" placeholder="36" required /></label>
           </div>
-          <p className="field-help">{machine === 'printer' ? 'The maximum finished print width is 24 inches. An admin will review the artwork and choose the paper material.' : 'Enter the finished dimensions and add a cut layout or clear reference when available.'}</p>
+          <p className="field-help">{machine === 'printer' ? 'The maximum finished print width is 24 inches. A karyakar will review the artwork and choose the paper material.' : 'Enter the finished dimensions and add a cut layout or clear reference when available.'}</p>
 
           <label className="upload-label">Artwork files <span>{machine === 'printer' ? 'Required' : 'Optional'}</span></label>
           <div className="dropzone" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
@@ -272,7 +272,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
         </fieldset>
 
         <div className="submit-area">
-          <p>Your ticket is saved before you receive a ticket number. An admin reviews each request before it enters the work queue. Approved jobs normally follow submission order, but staff may group jobs by material or adjust the working order. Timing depends on staff and material availability.</p>
+          <p>Your ticket is saved before you receive a ticket number. A karyakar reviews each request before it enters the work queue. Approved jobs normally follow submission order, but staff may group jobs by material or adjust the working order. Timing depends on staff and material availability.</p>
           <button className="button button-primary submit-button" type="submit" disabled={submitting}>{submitting ? 'Submitting ticket' : canRetry ? 'Try again' : 'Submit ticket'} <ArrowRight weight="bold" aria-hidden="true" /></button>
         </div>
         {submitting && <progress max="100" value={progress} aria-label={`Upload progress: ${progress}%`} />}
