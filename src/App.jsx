@@ -69,18 +69,18 @@ function Header() {
 function MachineChoice({ value, onChange }) {
   return (
     <section className="machine-step" aria-labelledby="ticket-question">
-      <p className="eyebrow">Open a workshop ticket</p>
-      <h1 id="ticket-question" tabIndex="-1">What are you opening a ticket for?</h1>
+      <p className="eyebrow">Start a workshop ticket</p>
+      <h1 id="ticket-question" tabIndex="-1">What do you need?</h1>
       <div className="machine-choices" role="group" aria-label="Choose a ticket type">
         <button className={value === 'printer' ? 'machine-choice selected' : 'machine-choice'} type="button" aria-labelledby="poster-printing-title" aria-describedby="poster-printing-description" onClick={() => onChange('printer')}>
           <span className="choice-icon"><Printer size={34} weight="duotone" aria-hidden="true" /></span>
-          <span className="choice-copy"><strong id="poster-printing-title">Poster printing</strong><small id="poster-printing-description">Posters, signs, stickers, and canvas up to 24 inches wide</small></span>
-          <span className="choice-select" aria-hidden="true">Select <ArrowRight weight="bold" /></span>
+          <span className="choice-copy"><strong id="poster-printing-title">Poster printing</strong><small id="poster-printing-description">Posters, signs, stickers, and canvas up to 24 inches wide.</small></span>
+          <span className="choice-select" aria-hidden="true">Start <ArrowRight weight="bold" /></span>
         </button>
         <button className={value === 'foam' ? 'machine-choice selected' : 'machine-choice'} type="button" aria-labelledby="foam-cutting-title" aria-describedby="foam-cutting-description" onClick={() => onChange('foam')}>
           <span className="choice-icon"><Scissors size={34} weight="duotone" aria-hidden="true" /></span>
-          <span className="choice-copy"><strong id="foam-cutting-title">Foam cutting</strong><small id="foam-cutting-description">Foam letters, shapes, signs, and display pieces</small></span>
-          <span className="choice-select" aria-hidden="true">Select <ArrowRight weight="bold" /></span>
+          <span className="choice-copy"><strong id="foam-cutting-title">Foam cutting</strong><small id="foam-cutting-description">Foam letters, shapes, signs, and display pieces.</small></span>
+          <span className="choice-select" aria-hidden="true">Start <ArrowRight weight="bold" /></span>
         </button>
       </div>
     </section>
@@ -221,19 +221,19 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
       <div className="form-heading">
         <button className="change-machine" type="button" onClick={() => { onChangeMachine(null); focusSection('ticket-question'); }}><ArrowLeft aria-hidden="true" /> Change request type</button>
         <span className="selected-machine">{machine === 'printer' ? <Printer aria-hidden="true" /> : <Scissors aria-hidden="true" />}{MACHINES[machine]}</span>
-        <h2 id="form-title" tabIndex="-1">Tell us about the job.</h2>
-        <p>Required fields are marked. Send one ticket for each item or design.</p>
+        <h2 id="form-title" tabIndex="-1">{MACHINES[machine]} request</h2>
+        <p>Complete the fields below. Send one ticket for each item or design.</p>
       </div>
 
       <form ref={formRef} onSubmit={submit} aria-busy={submitting}>
         <input type="hidden" name="machine" value={machine} />
 
         <fieldset className="form-card">
-          <legend>Contact and purpose</legend>
+          <legend>About your request</legend>
           <div className="field-grid">
             <label>Name <span>Required</span><input name="customerName" autoComplete="name" required maxLength="100" placeholder="Your name" /></label>
             <label>Department <span>Required</span><input name="department" required maxLength="100" placeholder="Decorations, Events, Youth" /></label>
-            <label className="field-full">What is this for? <span>Required</span><textarea name="purpose" required maxLength="2000" rows="4" placeholder="Describe the event, project, and how the finished piece will be used." /></label>
+            <label className="field-full">What is this for? <span>Required</span><textarea name="purpose" required maxLength="2000" rows="4" placeholder="Tell us about the event or project." /></label>
             <label>Needed by <span>Required</span><select name="neededBy" required defaultValue="No rush"><option>Today</option><option>Tomorrow</option><option>This week</option><option>No rush</option></select></label>
           </div>
         </fieldset>
@@ -241,17 +241,17 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
         <fieldset className="form-card">
           <legend>Job details</legend>
           <div className="field-grid details-grid">
-            {machine === 'foam' && <label>Foam thickness <span>Inches</span><input name="thickness" type="number" min="0.01" max="1000" step="any" placeholder="2" required /></label>}
+            {machine === 'foam' && <label>Foam thickness <span>Required</span><select name="thickness" required defaultValue=""><option value="" disabled>Choose thickness</option><option value="1">1 inch</option><option value="2">2 inches</option></select></label>}
             <label>Quantity <span>Required</span><input name="quantity" type="number" min="1" max="10000" step="1" defaultValue="1" required /></label>
-            <label>Width <span>Inches</span><input name="width" type="number" min="0.01" max={machine === 'printer' ? '24' : '10000'} step="any" placeholder={machine === 'printer' ? '24' : '20'} required /></label>
-            <label>Length <span>Inches</span><input name="length" type="number" min="0.01" max="100000" step="any" placeholder="36" required /></label>
+            <label>Width in inches <span>Required</span><input name="width" type="number" min="0.01" max={machine === 'printer' ? '24' : '10000'} step="any" placeholder={machine === 'printer' ? '24' : '20'} required /></label>
+            <label>Length in inches <span>Required</span><input name="length" type="number" min="0.01" max="100000" step="any" placeholder="36" required /></label>
           </div>
-          <p className="field-help">{machine === 'printer' ? 'The maximum finished print width is 24 inches. A karyakar will review the artwork and choose the paper material.' : 'Enter the finished dimensions and add a cut layout or clear reference when available.'}</p>
+          <p className="field-help">{machine === 'printer' ? 'Maximum print width: 24 inches. Staff will review the artwork and choose the paper.' : 'Add the finished size and a cut layout or reference if you have one.'}</p>
 
           <label className="upload-label">Artwork files <span>{machine === 'printer' ? 'Required' : 'Optional'}</span></label>
           <div className="dropzone" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
             <UploadSimple size={30} weight="duotone" aria-hidden="true" />
-            <strong>Choose files or drop them here</strong>
+            <strong>Add files or drop them here</strong>
             <small>PDF, SVG, DXF, PNG, JPG, or TIFF · up to 200 MB total</small>
             <input type="file" name="files" accept=".pdf,.svg,.dxf,.png,.jpg,.jpeg,.tif,.tiff" multiple onChange={event => { addFiles(event.target.files); event.target.value = ''; }} aria-label="Upload artwork files" />
           </div>
@@ -271,7 +271,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
         </fieldset>
 
         <div className="submit-area">
-          <p>Your ticket is saved before you receive a ticket number. A karyakar reviews each request before it enters the work queue. Approved jobs normally follow submission order, but staff may group jobs by material or adjust the working order. Timing depends on staff and material availability.</p>
+          <p>A karyakar reviews each request before it enters the queue. Timing depends on staff and material availability.</p>
           <button className="button button-primary submit-button" type="submit" disabled={submitting}>{submitting ? 'Submitting ticket' : canRetry ? 'Try again' : 'Submit ticket'} <ArrowRight weight="bold" aria-hidden="true" /></button>
         </div>
         {submitting && <progress max="100" value={progress} aria-label={`Upload progress: ${progress}%`} />}

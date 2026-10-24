@@ -264,18 +264,35 @@ h1 {
 }
 
 .machine-choice {
+  --ticket-cut: 14px;
   min-height: 260px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   padding: 28px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
+  border-radius: 0;
   background: rgba(255, 253, 248, 0.78);
   color: var(--ink);
   text-align: left;
   box-shadow: 0 12px 35px rgba(23, 37, 28, 0.05);
   transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+  clip-path: polygon(
+    var(--ticket-cut) 0,
+    calc(100% - var(--ticket-cut)) 0,
+    100% var(--ticket-cut),
+    100% calc(50% - 10px),
+    calc(100% - 8px) 50%,
+    100% calc(50% + 10px),
+    100% calc(100% - var(--ticket-cut)),
+    calc(100% - var(--ticket-cut)) 100%,
+    var(--ticket-cut) 100%,
+    0 calc(100% - var(--ticket-cut)),
+    0 calc(50% + 10px),
+    8px 50%,
+    0 calc(50% - 10px),
+    0 var(--ticket-cut)
+  );
 }
 
 .machine-choice:hover {
@@ -340,7 +357,7 @@ h1 {
 
 .form-section,
 .receipt-card {
-  max-width: 840px;
+  max-width: 720px;
   margin: 110px auto 0;
 }
 
@@ -407,13 +424,24 @@ form {
 }
 
 .form-card {
+  --ticket-cut: 12px;
   min-width: 0;
   margin: 0;
   padding: 28px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-md);
+  border-radius: 0;
   background: var(--paper);
   box-shadow: 0 10px 32px rgba(23, 37, 28, 0.05);
+  clip-path: polygon(
+    var(--ticket-cut) 0,
+    calc(100% - var(--ticket-cut)) 0,
+    100% var(--ticket-cut),
+    100% calc(100% - var(--ticket-cut)),
+    calc(100% - var(--ticket-cut)) 100%,
+    var(--ticket-cut) 100%,
+    0 calc(100% - var(--ticket-cut)),
+    0 var(--ticket-cut)
+  );
 }
 
 .form-card legend {
@@ -426,12 +454,12 @@ form {
 
 .field-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 22px 18px;
 }
 
 .details-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .field-full {
@@ -445,7 +473,7 @@ label {
   align-items: baseline;
   gap: 8px;
   color: var(--ink);
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 730;
 }
 
@@ -480,13 +508,13 @@ textarea {
 
 input,
 select {
-  min-height: 48px;
-  padding: 0 13px;
+  min-height: 56px;
+  padding: 0 16px;
 }
 
 textarea {
-  min-height: 108px;
-  padding: 13px;
+  min-height: 128px;
+  padding: 16px;
   resize: vertical;
   line-height: 1.5;
 }
@@ -641,10 +669,8 @@ textarea:focus {
 }
 
 .submit-area {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 30px;
+  display: grid;
+  gap: 16px;
   padding: 8px 2px 0;
 }
 
@@ -654,6 +680,11 @@ textarea:focus {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.submit-area .submit-button {
+  width: 100%;
+  min-height: 56px;
 }
 
 .button {
