@@ -59,7 +59,6 @@ function Header() {
   return (
     <header className="site-header">
       <a className="brand" href={location.pathname} aria-label="Mandir workshop ticket home">
-        <span className="brand-mark" aria-hidden="true">M</span>
         <span><strong>Mandir</strong><small>Workshop tickets</small></span>
       </a>
       <nav className="header-links"><a className="header-note" href="#queue">View queue</a></nav>
