@@ -1,12 +1,12 @@
 node_modules/
 .env*
 !.env.example
-data/
-uploads/
-dist/
-artifacts/
+/data/
+/uploads/
+/dist/
+/artifacts/
 .DS_Store
 
-build/
-coverage/
+/build/
+/coverage/
 .claude/
