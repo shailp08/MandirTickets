@@ -38,6 +38,6 @@ export default function QueueBoard({ apiBase, sheetsUrl, preview, recentTicket }
     {t.customerName || 'Requester name unavailable'}
   </small>
 </strong><span>{labels[t.status]}</span><span>{t.status === 'pending-review' ? 'Awaiting admin approval' : t.position === 1 ? 'No jobs ahead' : `${t.position - 1} ${t.position === 2 ? 'job' : 'jobs'} ahead`}</span></li>)}</ol>}
-    <small>Last updated {new Date(data.updatedAt).toLocaleTimeString()} · Refreshes every 30 seconds. Requester names are shown; contact details and artwork are private.</small></>}
+    </>}
   </section>;
 }

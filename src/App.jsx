@@ -3,16 +3,14 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
-  ClockCounterClockwise,
   FileArrowUp,
-  MagnifyingGlass,
   Printer,
   Scissors,
   UploadSimple,
   X,
 } from '@phosphor-icons/react';
 import QueueBoard from './QueueBoard.jsx';
-import { createSheetsTicket, trackSheetsTicket, validateSheetsFiles } from './sheets-api.js';
+import { createSheetsTicket, validateSheetsFiles } from './sheets-api.js';
 
 const MACHINES = {
   printer: 'Poster printing',
@@ -64,7 +62,7 @@ function Header() {
         <span className="brand-mark" aria-hidden="true">M</span>
         <span><strong>Mandir</strong><small>Workshop tickets</small></span>
       </a>
-      <nav className="header-links"><a className="header-note" href="#queue">View queue</a><a className="header-note" href="#tracker"><MagnifyingGlass aria-hidden="true" /> Track a ticket</a></nav>
+      <nav className="header-links"><a className="header-note" href="#queue">View queue</a></nav>
     </header>
   );
 }
@@ -74,7 +72,6 @@ function MachineChoice({ value, onChange }) {
     <section className="machine-step" aria-labelledby="ticket-question">
       <p className="eyebrow">Open a workshop ticket</p>
       <h1 id="ticket-question" tabIndex="-1">What are you opening a ticket for?</h1>
-      <p className="intro">Choose what you need. We will only show the questions for that type of job.</p>
       <div className="machine-choices" role="group" aria-label="Choose a ticket type">
         <button className={value === 'printer' ? 'machine-choice selected' : 'machine-choice'} type="button" aria-labelledby="poster-printing-title" aria-describedby="poster-printing-description" onClick={() => onChange('printer')}>
           <span className="choice-icon"><Printer size={34} weight="duotone" aria-hidden="true" /></span>
@@ -214,7 +211,6 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
         <p className="receipt-help">An admin will check your files and dimensions before your request joins the staff queue. Save the ticket number{ticket.trackingCode ? ' and tracking code' : ''}. You will need them to check progress or collect the finished job.</p>
         <div className="receipt-actions">
           <button className="button button-secondary" type="button" onClick={() => window.print()}><Printer aria-hidden="true" /> Print receipt</button>
-          <a className="button button-secondary" href="#tracker"><MagnifyingGlass aria-hidden="true" /> Track ticket</a>
           <button className="button button-primary" type="button" onClick={startAnother}>Open another ticket <ArrowRight aria-hidden="true" /></button>
         </div>
       </section>
@@ -240,7 +236,6 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
             <label>Department <span>Required</span><input name="department" required maxLength="100" placeholder="Decorations, Events, Youth" /></label>
             <label className="field-full">What is this for? <span>Required</span><textarea name="purpose" required maxLength="2000" rows="4" placeholder="Describe the event, project, and how the finished piece will be used." /></label>
             <label>Needed by <span>Required</span><select name="neededBy" required defaultValue="No rush"><option>Today</option><option>Tomorrow</option><option>This week</option><option>No rush</option></select></label>
-            <label>Mobile phone <span>Optional</span><input name="phone" type="tel" autoComplete="tel" maxLength="40" placeholder="For example, +1 302 555 0123" /></label><label className="field-full sms-consent"><input type="checkbox" name="smsConsent" value="true" /> Text me when this request is ready, declined, or cancelled. I agree to receive these ticket updates at the number above. Message/data rates may apply. You can also check progress with your ticket receipt.</label>
           </div>
         </fieldset>
 
@@ -287,89 +282,6 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
   );
 }
 
-function TicketTracker({ recentTicket }) {
-  const [ticketNumber, setTicketNumber] = useState('');
-  const [trackingCode, setTrackingCode] = useState('');
-  const [result, setResult] = useState(null);
-  const [notice, setNotice] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!recentTicket) return;
-    setTicketNumber(recentTicket.ticketNumber || '');
-    setTrackingCode(recentTicket.trackingCode || '');
-    setResult(recentTicket);
-  }, [recentTicket]);
-
-  useEffect(() => {
-    if (!result?.ticketNumber || staticPreview) return;
-    let live = true, busy = false;
-    const number = result.ticketNumber, code = result.trackingCode;
-    const timer = setInterval(async () => {
-      if (busy) return;
-      busy = true;
-      try {
-        let updated;
-        if (SHEETS_API_URL) updated = await trackSheetsTicket(SHEETS_API_URL, { ticket: number, code });
-        else {
-          const response = await fetch(apiUrl(`/api/track/${encodeURIComponent(number)}?code=${encodeURIComponent(code || '')}`), { signal: AbortSignal.timeout(15000) });
-          if (!response.ok) throw new Error();
-          updated = { ...(await response.json()), trackingCode: code };
-        }
-        if (live) { setResult(updated); setNotice(''); }
-      } catch { if (live) setNotice('Automatic update failed. The displayed status may be out of date; try Track ticket again.'); }
-      finally { busy = false; }
-    }, 30000);
-    return () => { live = false; clearInterval(timer); };
-  }, [result?.ticketNumber, result?.trackingCode]);
-
-  const track = async event => {
-    event.preventDefault();
-    setLoading(true);
-    setNotice('');
-    setResult(null);
-    try {
-      let tracked;
-      if (SHEETS_API_URL) {
-        tracked = await trackSheetsTicket(SHEETS_API_URL, { ticket: ticketNumber, code: trackingCode });
-      } else if (!staticPreview) {
-        const response = await fetch(apiUrl(`/api/track/${encodeURIComponent(ticketNumber.trim())}?code=${encodeURIComponent(trackingCode)}`), { credentials: 'include', signal: AbortSignal.timeout(15000) });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.error || 'The ticket could not be found.');
-        tracked = { ...data, trackingCode };
-      } else {
-        throw new Error('The hosted ticket backend has not been connected yet.');
-      }
-      setResult(tracked);
-    } catch (error) {
-      setNotice(error.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <section className="tracker-section" id="tracker" aria-labelledby="tracker-title">
-      <div className="tracker-heading">
-        <span className="tracker-icon"><ClockCounterClockwise size={28} weight="duotone" aria-hidden="true" /></span>
-        <div><p className="eyebrow">Ticket tracker</p><h2 id="tracker-title">Check your request.</h2><p>{SHEETS_API_URL ? 'Enter the ticket number and tracking code from your receipt.' : 'Enter the ticket number from your receipt.'}</p></div>
-      </div>
-      <form className={SHEETS_API_URL ? 'tracker-form' : 'tracker-form tracker-form-compact'} onSubmit={track} aria-busy={loading}>
-        <label>Ticket number <span>Required</span><input value={ticketNumber} onChange={event => setTicketNumber(event.target.value.toUpperCase())} required maxLength="12" placeholder="P-0001" autoComplete="off" /></label>
-        {<label>Tracking code <span>{SHEETS_API_URL ? 'Required' : 'For private review details'}</span><input value={trackingCode} onChange={event => setTrackingCode(event.target.value.toUpperCase())} required={Boolean(SHEETS_API_URL)} minLength="8" maxLength={SHEETS_API_URL ? 8 : 16} placeholder="ABCD2345" autoComplete="off" /></label>}
-        <button className="button button-primary" type="submit" disabled={loading}>{loading ? 'Checking' : 'Track ticket'} <MagnifyingGlass aria-hidden="true" /></button>
-      </form>
-      {notice && <p className="notice error" role="alert">{notice}</p>}
-      {result && (
-        <div className="tracker-result" role="status" aria-live="polite">
-          <span className={`status-dot status-${result.status}`} aria-hidden="true" />
-          <div><small>{result.ticketNumber}</small><strong>{STATUS_LABELS[result.status] || result.status}</strong>{result.reason && <p>{result.reason}</p>}{result.status === 'pending-review' && <p>Your request has not entered the staff queue yet.</p>}<p>{machineName(result)}{result.position ? ` · ${result.position - 1} ${result.position === 2 ? 'job' : 'jobs'} ahead of you` : ''}</p></div>
-        </div>
-      )}
-    </section>
-  );
-}
-
 function App() {
   const [machine, setMachine] = useState(null);
   const [recentTicket, setRecentTicket] = useState(null);
@@ -388,7 +300,6 @@ function App() {
         <MachineChoice value={machine} onChange={chooseMachine} />
         {machine && <div id="ticket-form"><TicketForm machine={machine} onChangeMachine={chooseMachine} onTicket={setRecentTicket} /></div>}
         <QueueBoard apiBase={API_BASE_URL} sheetsUrl={SHEETS_API_URL} preview={staticPreview} recentTicket={recentTicket} />
-        <TicketTracker recentTicket={recentTicket} />
       </main>
       <footer><strong>Mandir Workshop Tickets</strong><span>Poster printing and foam cutting requests in one place.</span></footer>
     </div>
