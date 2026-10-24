@@ -24,7 +24,9 @@ const dxf = '0\nSECTION\n2\nENTITIES\n0\nLINE\n10\n0\n20\n0\n11\n24\n21\n12\n0\n
 test('filename allowlist rejects executables, paths, control characters and oversized names', () => {
   for (const name of ['design.html','design.pdf.exe','../design.pdf','dir\\design.pdf','a\0.pdf','a\n.pdf','C:design.svg','x'.repeat(241)+'.pdf','']) assert.throws(() => validateFilename(name));
   assert.equal(validateFilename('Poster final.PDF'),'.pdf');
+  assert.equal(validateFilename('photo.JPEG'),'.jpeg');
   assert.equal(validateFilename('drawing.dxf'),'.dxf');
+  assert.throws(() => validateFilename('reference.png'));
 });
 test('static SVG validates with a content hash; MIME is not trusted', async t => {
   const content = svg('<defs><linearGradient id="g"><stop offset="0" stop-color="red"/></linearGradient></defs><rect width="24" height="24" fill="url(#g)"/>');
@@ -62,8 +64,8 @@ test('ASCII DXF accepts paired finite groups and rejects malformed or non-finite
     await assert.rejects(validateUpload(await fixture(t,'bad.dxf',content)),error => error.status===400);
   }
 });
-test('PDF/image envelope checks reject spoofed, empty and truncated uploads', async t => {
-  for (const [name, content] of [['empty.pdf',''],['fake.pdf','<script>alert(1)</script>'],['cut.pdf','%PDF-1.7\nmissing footer'],['image.png','PNG'],['image.jpg',Buffer.from('ffd8ff','hex')],['image.tiff','not an image']]) {
+test('PDF/JPG envelope checks reject spoofed, empty and truncated uploads', async t => {
+  for (const [name, content] of [['empty.pdf',''],['fake.pdf','<script>alert(1)</script>'],['cut.pdf','%PDF-1.7\nmissing footer'],['image.jpg',Buffer.from('ffd8ff','hex')]]) {
     await assert.rejects(validateUpload(await fixture(t,name,content)),error => error.status===400);
   }
   // Envelope success deliberately does NOT mean a complete PDF parse or a malware verdict.
@@ -89,8 +91,9 @@ test('ticket numeric validation rejects coercion, invalid units and unsafe dimen
   assert.equal(validateTicket({...details,width:'.01'},[]).width,0.01);
   assert.equal(validateTicket({...details,unit:'in'},[]).unit,'in');
   const print = {...details,machine:'printer',paperType:'Glossy',width:'24'};
-  assert.equal(validateTicket(print,[{}]).width,24);
-  assert.throws(()=>validateTicket({...print,width:'24.0001'},[{}]));
+  const printFiles = [{ originalName: 'poster.pdf' }];
+  assert.equal(validateTicket(print,printFiles).width,24);
+  assert.throws(()=>validateTicket({...print,width:'24.0001'},printFiles));
 });
 test('two staff updates using the same revision cannot overwrite each other', async t => {
   const store = await createStore(await directory(t));

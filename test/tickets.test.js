@@ -34,6 +34,12 @@ test('validates department, purpose, printer width, quantity and required print 
   assert.throws(()=>validateTicket({...input,machine:'printer',paperType:'Standard'},[]));
   assert.equal(validateTicket(input,[]).machine,'foam');
 });
+test('validates file formats for each machine',()=>{
+  assert.throws(()=>validateTicket({...input,machine:'printer'},[{originalName:'cut.svg'}]),/PDF or JPG/i);
+  assert.throws(()=>validateTicket(input,[{originalName:'photo.jpg'}]),/SVG or DXF/i);
+  assert.doesNotThrow(()=>validateTicket({...input,machine:'printer'},[{originalName:'poster.JPG'}]));
+  assert.doesNotThrow(()=>validateTicket(input,[{originalName:'cut.DXF'}]));
+});
 test('status changes move queue positions, hide closed jobs, preserve history and private data',async t=>{
   const store=await createStore(await temp(t));
   const first=(await store.create(validateTicket(input,[]),'one')).ticket;
@@ -107,8 +113,8 @@ test('HTTP flow: auth, uploads, receipt, privacy, tracking, status and export',a
   assert.equal((await fetch(base+'/api/session',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:'bad'})})).status,401);
   const login=await fetch(base+'/api/session',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:'admin',password:'test-only-secret'})});
   const cookie=login.headers.get('set-cookie').split(';')[0]; assert.match(login.headers.get('set-cookie'),/HttpOnly/); assert.match(login.headers.get('set-cookie'),/SameSite=None/); assert.match(login.headers.get('set-cookie'),/Secure/);
-  const design = await fs.readFile(new URL('./print-sample.svg', import.meta.url), 'utf8');
-  const form=()=>{const data=new FormData();for(const[k,v]of Object.entries({...input,machine:'printer',paperType:'Glossy'}))data.set(k,v);data.set('files',new Blob([design]),'sample.svg');return data;};
+  const design = '%PDF-1.7\n%%EOF\n';
+  const form=()=>{const data=new FormData();for(const[k,v]of Object.entries({...input,machine:'printer',paperType:'Glossy'}))data.set(k,v);data.set('files',new Blob([design]),'sample.pdf');return data;};
   assert.equal((await fetch(base+'/api/session',{method:'POST'})).status,400);
   assert.equal((await fetch(base+'/api/session',{method:'POST',headers:{'content-type':'application/json'},body:'{"password":'})).status,400);
   assert.equal((await fetch(base+'/api/tickets',{method:'POST',body:form()})).status,400);
@@ -154,7 +160,7 @@ test('HTTP flow: auth, uploads, receipt, privacy, tracking, status and export',a
   assert.equal((await fetch(base+'/api/tickets',{method:'POST',headers:{'idempotency-key':'http-malicious-1234'},body:malicious})).status,400);
   const disguised = form(); disguised.set('files',new Blob(['not a pdf']),'bad.pdf');
   assert.equal((await fetch(base+'/api/tickets',{method:'POST',headers:{'idempotency-key':'http-disguised-1234'},body:disguised})).status,400);
-  const oversized = form(); oversized.set('files',new Blob([new Uint8Array(1048577)]),'oversized.png');
+  const oversized = form(); oversized.set('files',new Blob([new Uint8Array(1048577)]),'oversized.jpg');
   const oversizedResponse = await fetch(base+'/api/tickets',{method:'POST',headers:{'idempotency-key':'http-oversized-1234'},body:oversized});
   assert.equal(oversizedResponse.status,400); assert.match((await oversizedResponse.json()).error,/1 MB/);
   assert.equal((await fs.readdir(path.join(dir,'uploads'))).length,1);

@@ -61,6 +61,18 @@ test('Apps Script backend requires a safe print file and rejects bot submissions
   assert.equal(ticket.files[0].name, 'art.pdf');
 });
 
+test('Apps Script backend enforces machine-specific file formats', () => {
+  assert.throws(() => context.validatePublicTicket_({
+    ...baseTicket(),
+    machine: 'printer',
+    files: [{ name: 'cut.svg', type: 'image/svg+xml', size: 4, data: 'PHN2Zz4=' }],
+  }), /PDF or JPG/i);
+  assert.throws(() => context.validatePublicTicket_({
+    ...baseTicket(),
+    files: [{ name: 'photo.jpg', type: 'image/jpeg', size: 4, data: '/9j/2Q==' }],
+  }), /SVG or DXF/i);
+});
+
 test('Apps Script backend accepts private Drive receipts up to 200 MB total', () => {
   const ticket = context.validatePublicTicket_({
     ...baseTicket(),
@@ -99,7 +111,7 @@ test('Apps Script backend rejects invalid dimensions, deadlines, keys, and attac
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), width: '0' }), /valid width/i);
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), neededBy: 'Eventually' }), /needed/i);
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), requestKey: 'short' }), /Refresh/i);
-  assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), files: [{ name: 'bad.exe', size: 4, data: 'AAAAAA==' }] }), /PDF, SVG/i);
+  assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), files: [{ name: 'bad.exe', size: 4, data: 'AAAAAA==' }] }), /SVG or DXF/i);
 });
 
 test('upload reservation retries charge daily bytes exactly once per request file', () => {
@@ -153,6 +165,7 @@ test('beginUpload binds Drive ownership metadata and requests an MD5 receipt', (
   const result = isolated.beginUpload_({
     requestKey,
     startedAt: Date.now() - 2000,
+    machine: 'printer',
     index: '0',
     name: 'poster.pdf',
     type: 'application/pdf',

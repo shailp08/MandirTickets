@@ -234,7 +234,7 @@ function validatePublicTicket_(input) {
     neededBy: requiredArrayChoice_(input.neededBy, DEADLINES, 'Choose when the job is needed.'),
     paperType: '',
     thickness: '',
-    files: validateFiles_(input.files || [])
+    files: validateFiles_(input.files || [], machine)
   };
   if (machine === 'printer') {
     if (!request.files.length) throw new Error('Add at least one print-ready file.');
@@ -245,15 +245,22 @@ function validatePublicTicket_(input) {
   return request;
 }
 
-function validateFiles_(files) {
+function validateFiles_(files, machine) {
   if (!Array.isArray(files) || files.length > MAX_FILES) throw new Error('Attach no more than ' + MAX_FILES + ' files.');
+  var format = machine === 'printer'
+    ? { pattern: /\.(pdf|jpe?g)$/i, message: 'Poster printing accepts PDF or JPG files only.' }
+    : machine === 'foam'
+      ? { pattern: /\.(svg|dxf)$/i, message: 'Foam cutting accepts SVG or DXF files only.' }
+      : null;
+  if (!format) throw new Error('Choose a machine.');
   var total = 0;
   var legacyTotal = 0;
   return files.map(function(file, index) {
     var name = String(file && file.name || '');
     var type = String(file && file.type || 'application/octet-stream').slice(0, 100);
     var size = Number(file && file.size);
-    if (!name || name.length > 180 || /[\\/\u0000-\u001f]/.test(name) || !/\.(pdf|svg|dxf|png|jpe?g|tiff?)$/i.test(name)) throw new Error('Use PDF, SVG, DXF, PNG, JPG, or TIFF files with safe filenames.');
+    if (!name || name.length > 180 || /[\\/\u0000-\u001f]/.test(name)) throw new Error('Use a safe filename under 180 characters.');
+    if (!format.pattern.test(name)) throw new Error(format.message);
     if (!Number.isSafeInteger(size) || size < 1 || size > MAX_FILE_BYTES) throw new Error('Each file must be 200 MB or smaller.');
     total += size;
     if (total > MAX_TOTAL_BYTES) throw new Error('Attachments must total 200 MB or less.');
@@ -311,6 +318,7 @@ function getDriveFileMetadata_(fileId) {
 
 function beginUpload_(params) {
   validateRequestWindow_(params.startedAt);
+  var machine = requiredChoice_(params.machine, MACHINES, 'Choose a machine.');
   var requestKey = String(params.requestKey || '').toLowerCase();
   if (!/^[a-f0-9]{32}$/.test(requestKey)) throw new Error('Refresh the form and submit again.');
   var index = Number(params.index);
@@ -322,7 +330,7 @@ function beginUpload_(params) {
     id: 'pendingfile',
     index: 0,
     md5Checksum: '00000000000000000000000000000000'
-  }])[0];
+  }], machine)[0];
   var properties = PropertiesService.getScriptProperties();
   var origin = String(params.origin || '');
   var configuredOrigins = String(properties.getProperty('UPLOAD_ORIGINS') || '').split(',').map(function(value) { return value.trim(); }).filter(String);

@@ -10,7 +10,7 @@ import {
   X,
 } from '@phosphor-icons/react';
 import QueueBoard from './QueueBoard.jsx';
-import { createSheetsTicket, validateSheetsFiles } from './sheets-api.js';
+import { createSheetsTicket, validateFileTypes, validateSheetsFiles } from './sheets-api.js';
 
 const MACHINES = {
   printer: 'Poster printing',
@@ -112,7 +112,8 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
   const addFiles = incoming => {
     const nextFiles = [...files, ...Array.from(incoming)];
     try {
-      if (SHEETS_API_URL) validateSheetsFiles(nextFiles);
+      validateFileTypes(nextFiles, machine);
+      if (SHEETS_API_URL) validateSheetsFiles(nextFiles, machine);
       setFiles(nextFiles);
       setNotice({ text: '', error: false });
       setCanRetry(false);
@@ -252,8 +253,8 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
           <div className="dropzone" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
             <UploadSimple size={30} weight="duotone" aria-hidden="true" />
             <strong>Add files or drop them here</strong>
-            <small>PDF, SVG, DXF, PNG, JPG, or TIFF · up to 200 MB total</small>
-            <input type="file" name="files" accept=".pdf,.svg,.dxf,.png,.jpg,.jpeg,.tif,.tiff" multiple onChange={event => { addFiles(event.target.files); event.target.value = ''; }} aria-label="Upload artwork files" />
+            <small>{machine === 'printer' ? 'PDF or JPG' : 'SVG or DXF'} · up to 200 MB total</small>
+            <input type="file" name="files" accept={machine === 'printer' ? '.pdf,.jpg,.jpeg' : '.svg,.dxf'} multiple onChange={event => { addFiles(event.target.files); event.target.value = ''; }} aria-label="Upload artwork files" />
           </div>
 
           {files.length > 0 && (

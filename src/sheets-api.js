@@ -9,11 +9,24 @@ const SHEETS_REQUEST_ATTEMPTS = 5;
 const uploadedFilesByRequest = new Map();
 const wait = milliseconds => new Promise(resolve => window.setTimeout(resolve, milliseconds));
 
-export function validateSheetsFiles(files) {
+const fileRule = machine => {
+  if (machine === 'printer') return { pattern: /\.(pdf|jpe?g)$/i, message: 'Poster printing accepts PDF or JPG files only.' };
+  if (machine === 'foam') return { pattern: /\.(svg|dxf)$/i, message: 'Foam cutting accepts SVG or DXF files only.' };
+  throw new Error('Choose a request type before adding files.');
+};
+
+export function validateFileTypes(files, machine) {
+  const rule = fileRule(machine);
+  for (const file of files) {
+    if (!rule.pattern.test(file.name)) throw new Error(rule.message);
+  }
+}
+
+export function validateSheetsFiles(files, machine) {
   if (files.length > SHEETS_MAX_FILES) throw new Error(`Attach no more than ${SHEETS_MAX_FILES} files.`);
+  validateFileTypes(files, machine);
   let total = 0;
   for (const file of files) {
-    if (!/\.(pdf|svg|dxf|png|jpe?g|tiff?)$/i.test(file.name)) throw new Error('Use PDF, SVG, DXF, PNG, JPG, or TIFF files.');
     if (file.size < 1 || file.size > SHEETS_MAX_FILE_BYTES) throw new Error('Each file must be 200 MB or smaller.');
     total += file.size;
   }
@@ -189,7 +202,7 @@ export async function uploadDriveFile(sessionUrl, file, onProgress, {
 }
 
 async function uploadFiles(url, details, files, onProgress) {
-  validateSheetsFiles(files);
+  validateSheetsFiles(files, details.machine);
   const fingerprint = JSON.stringify(files.map(file => [file.name, file.size, file.type || '', file.lastModified || 0]));
   let cached = uploadedFilesByRequest.get(details.requestKey);
   if (!cached || cached.fingerprint !== fingerprint) {
@@ -208,6 +221,7 @@ async function uploadFiles(url, details, files, onProgress) {
         action: 'beginUpload',
         requestKey: details.requestKey,
         startedAt: details.startedAt,
+        machine: details.machine,
         index,
         name: file.name,
         type: file.type || 'application/octet-stream',

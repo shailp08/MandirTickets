@@ -5,6 +5,7 @@ import {
   driveNextOffset,
   retrySheetsTransport,
   uploadDriveFile,
+  validateFileTypes,
   validateSheetsFiles,
   SHEETS_MAX_FILE_BYTES,
   SHEETS_MAX_FILES,
@@ -107,21 +108,18 @@ async function withBrowserPipeline({ jsonp, xhr = [], onPost = () => {} }, opera
   }
 }
 
-test('Google Sheets client accepts the supported workshop file formats', () => {
-  assert.doesNotThrow(() => validateSheetsFiles([
-    file('poster.pdf'),
-    file('letters.svg'),
-    file('layout.dxf'),
-    file('reference.png'),
-    file('photo.JPG'),
-  ]));
+test('client accepts only the formats for the selected request type', () => {
+  assert.doesNotThrow(() => validateSheetsFiles([file('poster.pdf'), file('photo.JPG')], 'printer'));
+  assert.doesNotThrow(() => validateSheetsFiles([file('letters.svg'), file('layout.dxf')], 'foam'));
+  assert.throws(() => validateFileTypes([file('layout.svg')], 'printer'), /PDF or JPG/i);
+  assert.throws(() => validateFileTypes([file('photo.jpg')], 'foam'), /SVG or DXF/i);
 });
 
 test('Google Sheets client enforces count, extension, per-file, and total limits', () => {
-  assert.throws(() => validateSheetsFiles(Array.from({ length: SHEETS_MAX_FILES + 1 }, (_, index) => file(`${index}.pdf`))), /no more than/i);
-  assert.throws(() => validateSheetsFiles([file('installer.exe')]), /PDF, SVG/i);
-  assert.throws(() => validateSheetsFiles([file('oversize.pdf', SHEETS_MAX_FILE_BYTES + 1)]), /200 MB/i);
-  assert.throws(() => validateSheetsFiles([file('one.pdf', SHEETS_MAX_TOTAL_BYTES), file('two.pdf', 1)]), /200 MB/i);
+  assert.throws(() => validateSheetsFiles(Array.from({ length: SHEETS_MAX_FILES + 1 }, (_, index) => file(`${index}.pdf`)), 'printer'), /no more than/i);
+  assert.throws(() => validateSheetsFiles([file('installer.exe')], 'printer'), /PDF or JPG/i);
+  assert.throws(() => validateSheetsFiles([file('oversize.pdf', SHEETS_MAX_FILE_BYTES + 1)], 'printer'), /200 MB/i);
+  assert.throws(() => validateSheetsFiles([file('one.pdf', SHEETS_MAX_TOTAL_BYTES), file('two.pdf', 1)], 'printer'), /200 MB/i);
 });
 
 test('Google Sheets client retries transient transport failures', async () => {
@@ -182,6 +180,7 @@ test('completed Drive receipts are reused when ticket confirmation must be retri
   await withBrowserPipeline({
     jsonp(parameters) {
       if (parameters.action === 'beginUpload') {
+        assert.equal(parameters.machine, 'printer');
         beginUploads++;
         return { ok: true, sessionUrl: 'https://www.googleapis.com/upload/session-one' };
       }
