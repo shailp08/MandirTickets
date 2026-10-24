@@ -31,7 +31,7 @@ export default function QueueBoard({ apiBase, sheetsUrl, preview, recentTicket }
     {preview && <p className="notice">Connect the ticket service to see the live queue.</p>}
     {error && <p role="alert" className="notice error">{error}</p>}
     {!data && !error && !preview && <p role="status">Loading the workshop queue…</p>}
-    {selected && <><p className="queue-summary"><strong>{selected.waiting}</strong> approved jobs · {selected.inReview || 0} in review · {machine === 'printer' ? 'HP DesignJet T210 · 24-inch printer' : '2525 hot-wire foam cutter'}</p>
+    {selected && <><p className="queue-summary"><strong>{selected.waiting}</strong> approved jobs · {selected.inReview || 0} in review</p>
     {tickets.length === 0 ? <p className="queue-empty">No requests in review, waiting, or being made in this queue.</p> : <ol className="public-queue">{tickets.map(t => <li key={t.ticketNumber} className={t.ticketNumber === recentTicket?.ticketNumber ? 'your-ticket' : ''}><span className="queue-position">{t.position ?? '—'}</span><strong className="queue-ticket-info">
   <span>{t.ticketNumber}</span>
   <small className="queue-requester-name">
