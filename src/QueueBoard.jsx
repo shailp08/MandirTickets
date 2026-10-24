@@ -25,8 +25,7 @@ export default function QueueBoard({ apiBase, sheetsUrl, preview, recentTicket }
   const selected = data?.machines.find(m => m.id === machine);
   const tickets = selected?.tickets.filter(t => ['pending-review', 'queued', 'in-progress'].includes(t.status)) || [];
   return <section className="queue-board" id="queue" aria-labelledby="queue-title">
-    <div className="queue-heading"><div><p className="eyebrow">Live workshop queue</p><h2 id="queue-title">See where things stand.</h2></div><button className="button button-secondary" disabled={loading || preview} onClick={() => setRefresh(n => n + 1)}>{loading ? 'Updating…' : 'Refresh queue'}</button></div>
-    <p>Requests awaiting karyakar approval appear as In Review. Only approved jobs receive a production queue position. Positions follow submission order, but staff may group jobs by material or adjust the working order. Positions count jobs, not people, and do not promise a completion time.</p>
+    <div className="queue-heading"><div><h2 id="queue-title">Workshop queue</h2><p>Only approved jobs receive a position. Staff may adjust the order for material or machine setup.</p></div><button className="button button-secondary" disabled={loading || preview} onClick={() => setRefresh(n => n + 1)}>{loading ? 'Updating…' : 'Refresh'}</button></div>
     <div className="queue-tabs" role="group" aria-label="Queue type">{[['printer', 'Poster printing'], ['foam', 'Foam cutting']].map(([id, label]) => <button key={id} aria-pressed={machine === id} onClick={() => setMachine(id)}>{label} <span>{data ? (data.machines.find(m => m.id === id)?.waiting || 0) + (data.machines.find(m => m.id === id)?.inReview || 0) : '—'}</span></button>)}</div>
     {preview && <p className="notice">Connect the ticket service to see the live queue.</p>}
     {error && <p role="alert" className="notice error">{error}</p>}
