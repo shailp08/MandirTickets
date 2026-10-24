@@ -34,7 +34,10 @@ export default function QueueBoard({ apiBase, sheetsUrl, preview, recentTicket }
     {selected && <><p className="queue-summary"><strong>{selected.waiting}</strong> approved jobs · {selected.inReview || 0} in review · {machine === 'printer' ? 'HP DesignJet T210 · 24-inch printer' : '2525 hot-wire foam cutter'}</p>
     {tickets.length === 0 ? <p className="queue-empty">No requests in review, waiting, or being made in this queue.</p> : <ol className="public-queue">{tickets.map(t => <li key={t.ticketNumber} className={t.ticketNumber === recentTicket?.ticketNumber ? 'your-ticket' : ''}><span className="queue-position">{t.position ?? '—'}</span><strong className="queue-ticket-info">
   <span>{t.ticketNumber}</span>
+  <small className="queue-requester-name">
+    {t.customerName || 'Requester name unavailable'}
+  </small>
 </strong><span>{labels[t.status]}</span><span>{t.status === 'pending-review' ? 'Awaiting admin approval' : t.position === 1 ? 'No jobs ahead' : `${t.position - 1} ${t.position === 2 ? 'job' : 'jobs'} ahead`}</span></li>)}</ol>}
-    <small>Last updated {new Date(data.updatedAt).toLocaleTimeString()} · Refreshes every 30 seconds. Contact details, requester names, notes, and artwork remain private.</small></>}
+    <small>Last updated {new Date(data.updatedAt).toLocaleTimeString()} · Refreshes every 30 seconds. Requester names are shown; contact details and artwork are private.</small></>}
   </section>;
 }

@@ -1,6 +1,6 @@
 # Delaware Mandir workshop — setup and rollout
 
-The public site and staff dashboard are integrated in this repository. The live GitHub Pages site and its Google Apps Script deployment have **not** been changed.
+All project files are inside MandirTickets, including the staff-dashboard subfolder. The live GitHub Pages site and its Google Apps Script deployment have **not** been changed.
 
 ## Workflow
 
@@ -9,13 +9,13 @@ The public site and staff dashboard are integrated in this repository. The live 
 3. The admin saves corrections, approves for production, or declines with a reason. Approval requires a paper choice for printing. The interface also requires confirmation that artwork, sizes, quantity, and material were checked. Edits and decisions are recorded in history; concurrent edits cannot overwrite a newer revision.
 4. Approved requests enter the staff printing or foam queue. Submission time provides the default order, but staff can start any approved job, including several jobs being worked on. Positions are advisory, not promised completion times.
 5. Staff record actual material used and waste, then mark ready for pickup, collected, or cancelled. Cancellation requires a reason. Material history is retained.
-6. Requesters who opt in receive a Textbee notification when ready, declined, or cancelled. Private tracking shows the current status and review/cancellation reason. The public queue shows ticket numbers, statuses, and positions; names, phone numbers, artwork, and review reasons remain private.
+6. Requesters who opt in receive a Textbee notification when ready, declined, or cancelled. Private tracking shows the current status and review/cancellation reason. The public queue shows the requester’s name below each ticket number. Phone numbers, artwork, and review reasons remain private.
 
 The workflow does not send commands to the printer or foam cutter. Trained volunteers operate the machines. Material totals measure recorded consumption, not remaining inventory, ink levels, or automatic machine telemetry.
 
 ## Accounts
 
-Configure the **admin** and **workshop** accounts in the server’s private environment. Automated tests verify the separate roles and permissions. Passwords are excluded from this guide, source control, and frontend builds.
+The requested **admin** and **workshop** accounts are configured in the original MandirTickets folder’s private `.env` file. Both logins were verified in the local browser. Passwords are excluded from this guide, the downloadable source archive, source control, and frontend builds.
 
 Both accounts use `/staff/`. The admin account opens the review workspace and can also use production tools. The workshop account can only access approved production tickets, files, and material records. Admin endpoints enforce permission checks on the server. The typed volunteer name is a history label, not an individually verified account identity.
 
@@ -92,10 +92,9 @@ SHEETS_SHARED_SECRET=
 
 Mount durable storage at `/app/data` with write access for the application user. Keep one server instance. Sessions last eight hours and are cleared on restart. The Google Sheet remains the source of truth for tickets, review history, and material usage; local durable storage keeps the SMS send journal. Google failures never create a replacement local production queue.
 
-The repository contains the public app at its root and the staff app in `PrintingDashboard/`. From the repository root:
+The archive contains one `MandirTickets` folder. From inside that folder:
 
 ```bash
-cp deploy/dockerignore .dockerignore
 docker build -f deploy/Dockerfile -t mandir-workshop .
 ```
 
@@ -103,18 +102,17 @@ The Dockerfile is prepared but has not been built here. The application builds w
 
 ## Local checks
 
-Use Node 22 or newer, then from the repository root:
+Use Node 22 or newer. Run these commands from MandirTickets:
 
 ```bash
-npm ci
-npm ci --prefix PrintingDashboard
+npm run setup
 npm run check
 npm start
 ```
 
 For a separate local test database, leave `WORKSHOP_GOOGLE_SCRIPT_URL`, `SHEETS_WEBHOOK_URL`, and Textbee credentials blank; set `HOST=127.0.0.1` and point `DATA_DIR` to a test directory. Open `http://localhost:3000/` and `/staff/`. Local mode is for development, not a replacement for the live Google system. Local-upload production mode additionally requires the existing ClamAV configuration.
 
-Dashboard tests, from the repository root:
+Dashboard-only tests, from MandirTickets:
 
 ```bash
 npm run test:staff
@@ -122,8 +120,8 @@ npm run test:staff
 
 ## Verification
 
-Both production builds passed. The backend suite passed 96 tests and the dashboard/library suite passed 190 tests. Checks cover approval gating, admin/staff authorization, editable fields, stale revisions, file-path restrictions, flexible production ordering, privacy, upload validation, material-entry retries, and Textbee acceptance, rejection, restart recovery, and duplicate-send prevention. The existing local-data audit passed.
+Both production builds passed. The backend suite passed 67 tests and the dashboard/library suite passed 190 tests. Checks cover approval gating, admin/staff authorization, editable fields, stale revisions, file-path restrictions, flexible production ordering, privacy, upload validation, material-entry retries, and Textbee acceptance, rejection, restart recovery, and duplicate-send prevention. The existing local-data audit passed.
 
-Browser checks used a separate empty database and confirmed that the public request/queue interface and private staff login render from the combined server. Sample data and credentials are excluded from the repository. Existing Create React App maintenance warnings remain; builds and tests pass.
+Browser checks used a separate sample database and confirmed both configured accounts, removal of the requester paper selector, awaiting-review receipts, admin corrections/approval, staff starting a later job, actual paper usage, pickup status, a visible unconfigured Textbee notification, and decline reasons in private tracking. Sample data and credentials are excluded from the archive. Existing Create React App maintenance warnings remain; builds and tests pass.
 
 Still needed for launch: access to the existing Apps Script editor, an online host with persistent storage, and the dedicated Textbee phone/SIM/account connection.

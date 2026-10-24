@@ -6,20 +6,22 @@
   "scripts": {
     "audit:data": "node scripts/audit-data.js",
     "build": "vite build",
-    "check": "npm run build && npm test && npm run audit:data",
-    "prestart": "npm run build && npm run build:staff",
+    "check": "npm run build:all && npm run test:all && npm run audit:data",
+    "prestart": "npm run build:all",
     "start": "node server.js",
-    "dev": "npm run build && node --watch server.js",
+    "dev": "npm run build:all && node --watch server.js",
     "test": "node --test --test-timeout=30000 test/*.test.js",
     "build:staff": "node scripts/build-staff.js",
-    "test:staff": "CI=true npm --prefix PrintingDashboard test -- --watchAll=false --runInBand"
+    "setup": "npm ci && npm --prefix staff-dashboard ci",
+    "build:all": "npm run build && npm run build:staff",
+    "test:staff": "npm --prefix staff-dashboard test -- --watchAll=false --runInBand",
+    "test:all": "npm test && npm run test:staff"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
     "dotenv": "^16.6.1",
     "express": "^5.1.0",
     "multer": "^2.4.0",
-    "nodemailer": "^10.1.7",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "saxes": "^6.0.0",

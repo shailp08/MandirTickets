@@ -10,18 +10,11 @@ const uploadedFilesByRequest = new Map();
 const wait = milliseconds => new Promise(resolve => window.setTimeout(resolve, milliseconds));
 
 export function validateSheetsFiles(files) {
-  if (!files || typeof files[Symbol.iterator] !== 'function') throw new Error('Choose files to attach.');
   if (files.length > SHEETS_MAX_FILES) throw new Error(`Attach no more than ${SHEETS_MAX_FILES} files.`);
   let total = 0;
   for (const file of files) {
-    const name = typeof file?.name === 'string' ? file.name : '';
-    if (!name || name.length > 180 || /[\\/\u0000-\u001f\u007f]/.test(name)
-      || !/\.(pdf|svg|dxf|png|jpe?g|tiff?)$/i.test(name)) {
-      throw new Error('Use PDF, SVG, DXF, PNG, JPG, or TIFF files with safe filenames.');
-    }
-    if (!Number.isSafeInteger(file.size) || file.size < 1 || file.size > SHEETS_MAX_FILE_BYTES) {
-      throw new Error('Each file must be 200 MB or smaller.');
-    }
+    if (!/\.(pdf|svg|dxf|png|jpe?g|tiff?)$/i.test(file.name)) throw new Error('Use PDF, SVG, DXF, PNG, JPG, or TIFF files.');
+    if (file.size < 1 || file.size > SHEETS_MAX_FILE_BYTES) throw new Error('Each file must be 200 MB or smaller.');
     total += file.size;
   }
   if (total > SHEETS_MAX_TOTAL_BYTES) throw new Error('Attachments must total 200 MB or less.');
@@ -68,12 +61,10 @@ export async function sheetsJsonp(url, parameters, timeout = 15000) {
   }
 }
 
-export async function trackSheetsTicket(url, { trackingNumber, ticket, code, requestKey } = {}) {
+export async function trackSheetsTicket(url, { ticket, code, requestKey } = {}) {
   const response = await sheetsJsonp(url, {
     action: 'track',
-    ...(requestKey ? { requestKey } : trackingNumber
-      ? { tracking: String(trackingNumber).trim().toUpperCase() }
-      : { ticket: String(ticket || '').trim().toUpperCase(), code: String(code || '').trim().toUpperCase() }),
+    ...(requestKey ? { requestKey } : { ticket: String(ticket || '').trim().toUpperCase(), code: String(code || '').trim().toUpperCase() }),
   });
   if (!response?.ok) throw new Error(response?.error || 'The ticket could not be found.');
   return response.ticket;
@@ -105,12 +96,7 @@ function putDriveChunk(sessionUrl, file, start, end, onProgress) {
     xhr.onabort = () => reject(driveRequestError('The file upload was interrupted.', true));
     xhr.onload = () => {
       if (xhr.status === 308) {
-        const nextOffset = driveNextOffset(xhr.getResponseHeader('Range'), null);
-        if (nextOffset === null) {
-          reject(driveRequestError('Google Drive did not confirm the file upload position.', true));
-          return;
-        }
-        resolve({ nextOffset });
+        resolve({ nextOffset: driveNextOffset(xhr.getResponseHeader('Range'), end) });
         return;
       }
       if (xhr.status < 200 || xhr.status >= 300) {
@@ -206,10 +192,8 @@ async function uploadFiles(url, details, files, onProgress) {
   validateSheetsFiles(files);
   const fingerprint = JSON.stringify(files.map(file => [file.name, file.size, file.type || '', file.lastModified || 0]));
   let cached = uploadedFilesByRequest.get(details.requestKey);
-  const sameFileSelection = cached?.files?.length === files.length
-    && cached.files.every((file, index) => file === files[index]);
-  if (!cached || cached.fingerprint !== fingerprint || !sameFileSelection) {
-    cached = { fingerprint, files: Array.from(files), uploaded: [] };
+  if (!cached || cached.fingerprint !== fingerprint) {
+    cached = { fingerprint, uploaded: [] };
     uploadedFilesByRequest.set(details.requestKey, cached);
   }
   const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
@@ -238,10 +222,6 @@ async function uploadFiles(url, details, files, onProgress) {
       const fraction = totalBytes ? (completedBytes + Math.min(loaded, file.size)) / totalBytes : 1;
       onProgress?.(Math.max(1, Math.round(fraction * 90)));
     });
-    if (!/^[A-Za-z0-9_-]{10,200}$/.test(String(receipt.id || ''))
-      || Number(receipt.size) !== file.size) {
-      throw new Error('Google Drive returned an incomplete file receipt. Please try again.');
-    }
     if (!/^[a-f0-9]{32}$/i.test(String(receipt.md5Checksum || ''))) throw new Error('Google Drive did not return a file integrity check. Please try again.');
     uploaded.push({
       id: receipt.id,

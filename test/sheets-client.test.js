@@ -20,7 +20,6 @@ const requestDetails = requestKey => ({
   customerName: 'Pipeline Test',
   department: 'Workshop',
   purpose: 'Verify upload delivery',
-  email: 'pipeline@example.com',
   phone: '',
   notes: '',
   quantity: '1',
@@ -123,9 +122,6 @@ test('Google Sheets client enforces count, extension, per-file, and total limits
   assert.throws(() => validateSheetsFiles([file('installer.exe')]), /PDF, SVG/i);
   assert.throws(() => validateSheetsFiles([file('oversize.pdf', SHEETS_MAX_FILE_BYTES + 1)]), /200 MB/i);
   assert.throws(() => validateSheetsFiles([file('one.pdf', SHEETS_MAX_TOTAL_BYTES), file('two.pdf', 1)]), /200 MB/i);
-  for (const invalid of [null, [{ name: '../poster.pdf', size: 1 }], [{ name: 'poster.pdf', size: NaN }], [{ name: 'poster.pdf', size: 1.5 }]]) {
-    assert.throws(() => validateSheetsFiles(invalid));
-  }
 });
 
 test('Google Sheets client retries transient transport failures', async () => {
@@ -191,7 +187,7 @@ test('completed Drive receipts are reused when ticket confirmation must be retri
       }
       trackCalls++;
       if (trackCalls <= 4) return { ok: false, error: 'The ticket is still being saved.' };
-      return { ok: true, ticket: { trackingNumber: 'DM-ABCD2345EFGH', status: 'queued' } };
+      return { ok: true, ticket: { ticketNumber: 'P-0042', trackingCode: 'ABCD2345', status: 'queued' } };
     },
     xhr: [{ status: 200, body: { id: 'drive_file_12345', size: '4096', mimeType: 'application/pdf', md5Checksum: '0123456789abcdef0123456789abcdef' } }],
     onPost: body => posts.push(body),
@@ -200,7 +196,7 @@ test('completed Drive receipts are reused when ticket confirmation must be retri
     await assert.rejects(createSheetsTicket('https://script.example/exec', details, [artwork]), /without uploading the files again/i);
     const ticket = await createSheetsTicket('https://script.example/exec', details, [artwork]);
 
-    assert.equal(ticket.trackingNumber, 'DM-ABCD2345EFGH');
+    assert.equal(ticket.ticketNumber, 'P-0042');
     assert.equal(beginUploads, 1, 'a confirmed Drive file must not be uploaded a second time');
     assert.equal(uploads.length, 1, 'retry should reuse the cached Drive receipt');
     assert.equal(posts.length, 2, 'retry should resend only the idempotent ticket creation request');
@@ -220,58 +216,6 @@ test('Drive range parsing uses only confirmed resumable-upload offsets', () => {
   assert.equal(driveNextOffset('bytes=0-0', 12), 1);
   assert.equal(driveNextOffset('bytes=5-10', 12), 12);
   assert.equal(driveNextOffset('garbage', 12), 12);
-});
-
-test('a 308 response without a confirmed range queries Drive before sending another chunk', async () => {
-  const original = globalThis.XMLHttpRequest;
-  const mebibyte = 1024 * 1024;
-  const size = 25 * mebibyte;
-  const requests = [];
-  let chunkRequests = 0;
-
-  class RangeAwareXMLHttpRequest {
-    upload = {};
-    headers = {};
-
-    open(method, url) { this.method = method; this.url = url; }
-    setRequestHeader(name, value) { this.headers[name] = value; }
-    getResponseHeader(name) { return name.toLowerCase() === 'range' ? this.range || null : null; }
-    send(body) {
-      requests.push({ range: this.headers['Content-Range'], body });
-      if (this.headers['Content-Range'] === `bytes */${size}`) {
-        this.status = 308;
-        this.range = `bytes=0-${mebibyte - 1}`;
-      } else {
-        chunkRequests++;
-        if (chunkRequests === 1) {
-          this.status = 308;
-          this.range = null;
-        } else {
-          this.status = 200;
-          this.responseText = JSON.stringify({ id: 'drive_file_confirmed', size: String(size) });
-        }
-      }
-      queueMicrotask(() => this.onload());
-    }
-  }
-
-  globalThis.XMLHttpRequest = RangeAwareXMLHttpRequest;
-  try {
-    const receipt = await uploadDriveFile(
-      'https://www.googleapis.com/upload/session-range',
-      { size, type: 'application/pdf', slice: (start, end) => ({ start, end, size: end - start }) },
-      () => {},
-      { pause: async () => {} },
-    );
-    assert.equal(receipt.id, 'drive_file_confirmed');
-    assert.deepEqual(requests.map(request => request.range), [
-      `bytes 0-${10 * mebibyte - 1}/${size}`,
-      `bytes */${size}`,
-      `bytes ${mebibyte}-${11 * mebibyte - 1}/${size}`,
-    ]);
-  } finally {
-    globalThis.XMLHttpRequest = original;
-  }
 });
 
 test('an interrupted Drive upload resumes at the server-confirmed offset without resending bytes', async () => {
@@ -375,7 +319,7 @@ test('ticket creation preserves file identity metadata from selection through th
   await withBrowserPipeline({
     jsonp(parameters) {
       if (parameters.action === 'beginUpload') return { ok: true, sessionUrl: 'https://www.googleapis.com/upload/metadata-session' };
-      return { ok: true, ticket: { trackingNumber: 'DM-CDEF4567GHJK', status: 'queued' } };
+      return { ok: true, ticket: { ticketNumber: 'P-0044', trackingCode: 'CDEF4567', status: 'queued' } };
     },
     xhr: [{ status: 200, body: { id: 'drive_file_metadata', name: 'pending-name', size: '8192', mimeType: 'application/pdf', md5Checksum: 'abcdef0123456789abcdef0123456789' } }],
     onPost: body => { posted = body; },
@@ -396,75 +340,4 @@ test('ticket creation preserves file identity metadata from selection through th
     size: artwork.size,
     md5Checksum: 'abcdef0123456789abcdef0123456789',
   }]);
-});
-
-test('replacing a file with identical metadata does not reuse the old Drive receipt', async () => {
-  const fileShape = {
-    name: 'poster.pdf',
-    size: 4096,
-    type: 'application/pdf',
-    lastModified: 1770000003000,
-    slice: (start, end) => ({ size: end - start }),
-  };
-  const originalSelection = { ...fileShape };
-  const replacementSelection = { ...fileShape };
-  let beginUploads = 0;
-  let trackCalls = 0;
-  const posts = [];
-
-  await withBrowserPipeline({
-    jsonp(parameters) {
-      if (parameters.action === 'beginUpload') {
-        beginUploads++;
-        return { ok: true, sessionUrl: `https://www.googleapis.com/upload/session-${beginUploads}` };
-      }
-      trackCalls++;
-      if (trackCalls <= 4) return { ok: false, error: 'The ticket is still being saved.' };
-      return { ok: true, ticket: { trackingNumber: 'DM-EFGH5678JKLM', status: 'queued' } };
-    },
-    xhr: [
-      { status: 200, body: { id: 'drive_file_original', size: '4096', md5Checksum: '0123456789abcdef0123456789abcdef' } },
-      { status: 200, body: { id: 'drive_file_replaced', size: '4096', md5Checksum: 'abcdef0123456789abcdef0123456789' } },
-    ],
-    onPost: body => posts.push(body),
-  }, async () => {
-    const details = requestDetails('44444444444444444444444444444444');
-    await assert.rejects(createSheetsTicket('https://script.example/exec', details, [originalSelection]), /without uploading the files again/i);
-    await createSheetsTicket('https://script.example/exec', details, [replacementSelection]);
-  });
-
-  assert.equal(beginUploads, 2);
-  assert.equal(posts.length, 2);
-  assert.equal(posts[1].files[0].id, 'drive_file_replaced');
-});
-
-test('an incomplete Drive receipt is never cached for ticket retries', async () => {
-  const artwork = {
-    name: 'poster.pdf',
-    size: 4096,
-    type: 'application/pdf',
-    lastModified: 1770000004000,
-    slice: (start, end) => ({ size: end - start }),
-  };
-  let beginUploads = 0;
-
-  await withBrowserPipeline({
-    jsonp(parameters) {
-      if (parameters.action === 'beginUpload') {
-        beginUploads++;
-        return { ok: true, sessionUrl: `https://www.googleapis.com/upload/bad-receipt-${beginUploads}` };
-      }
-      return { ok: true, ticket: { trackingNumber: 'DM-GHJK6789MNPQ', status: 'queued' } };
-    },
-    xhr: [
-      { status: 200, body: { id: 'drive_file_too_short', size: '2048', md5Checksum: '0123456789abcdef0123456789abcdef' } },
-      { status: 200, body: { id: 'drive_file_complete', size: '4096', md5Checksum: 'abcdef0123456789abcdef0123456789' } },
-    ],
-  }, async () => {
-    const details = requestDetails('55555555555555555555555555555555');
-    await assert.rejects(createSheetsTicket('https://script.example/exec', details, [artwork]), /incomplete file receipt/i);
-    await createSheetsTicket('https://script.example/exec', details, [artwork]);
-  });
-
-  assert.equal(beginUploads, 2);
 });

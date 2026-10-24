@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../integrations/google-sheets.gs', import.meta.url), 'utf8');
-const context = vm.createContext({ console, Utilities: { formatDate: () => '2026-10-22' } });
+const context = vm.createContext({ console });
 vm.runInContext(source, context, { filename: 'google-sheets.gs' });
 
 const loadContext = (globals = {}) => {
@@ -18,55 +18,9 @@ const propertiesStore = initial => {
   return {
     values,
     getProperty: key => values.get(key) ?? null,
-    getProperties: () => Object.fromEntries(values),
     setProperty: (key, value) => values.set(key, String(value)),
     deleteProperty: key => values.delete(key),
   };
-};
-
-const outboxBook = () => {
-  const rows = [];
-  let hidden = false;
-  const sheet = {
-    getLastRow: () => rows.length,
-    getMaxColumns: () => 10,
-    insertColumnsAfter() {},
-    isSheetHidden: () => hidden,
-    hideSheet() { hidden = true; },
-    deleteRow(rowNumber) { rows.splice(rowNumber - 1, 1); },
-    getRange(row, column, rowCount = 1, columnCount = 1) {
-      return {
-        setValues(values) {
-          for (let r = 0; r < rowCount; r++) {
-            rows[row - 1 + r] ||= [];
-            for (let c = 0; c < columnCount; c++) rows[row - 1 + r][column - 1 + c] = values[r][c];
-          }
-        },
-        setValue(value) {
-          rows[row - 1] ||= [];
-          rows[row - 1][column - 1] = value;
-        },
-        getValues: () => Array.from({ length: rowCount }, (_unused, r) =>
-          Array.from({ length: columnCount }, (_unusedColumn, c) => rows[row - 1 + r]?.[column - 1 + c] ?? '')),
-        getDisplayValues: () => Array.from({ length: rowCount }, (_unused, r) =>
-          Array.from({ length: columnCount }, (_unusedColumn, c) => String(rows[row - 1 + r]?.[column - 1 + c] ?? ''))),
-        createTextFinder(value) {
-          return {
-            matchEntireCell() { return this; },
-            findNext() {
-              const index = rows.findIndex((entry, rowIndex) => rowIndex >= row - 1 && String(entry?.[column - 1] ?? '') === value);
-              return index === -1 ? null : { getRow: () => index + 1 };
-            },
-          };
-        },
-      };
-    },
-  };
-  const book = {
-    getSheetByName: name => name === 'Notification Outbox' && rows.length ? sheet : null,
-    insertSheet: () => sheet,
-  };
-  return { book, rows, sheet };
 };
 
 const baseTicket = () => ({
@@ -78,7 +32,6 @@ const baseTicket = () => ({
   customerName: 'Test Person',
   department: 'Events',
   purpose: 'Stage letters',
-  email: 'requester@example.com',
   phone: '',
   notes: '',
   quantity: '2',
@@ -94,37 +47,6 @@ test('Apps Script backend validates a complete foam ticket', () => {
   assert.equal(ticket.machine, 'foam');
   assert.equal(ticket.quantity, 2);
   assert.equal(ticket.thickness, 2);
-  assert.equal(context.validatePublicTicket_({ ...baseTicket(), neededBy: '2028-02-29' }).neededBy, '2028-02-29');
-});
-
-test('Apps Script cost estimates match the Node material formulas', () => {
-  const print = context.estimateTicketCost_({ machine: 'printer', paperType: 'Glossy', quantity: 2, width: 24, length: 36 }, context.DEFAULT_PRICING);
-  assert.equal(print.amountCents, 1680);
-  assert.equal(print.amountDisplay, '$16.80');
-  const foam = context.estimateTicketCost_({ machine: 'foam', quantity: 5, width: 20, length: 36, thickness: 2 }, context.DEFAULT_PRICING);
-  assert.equal(foam.amountCents, 6000);
-  assert.match(foam.basis, /2 estimated 48 × 96/);
-});
-
-test('Apps Script rejects unsafe pricing totals and recognizes the legacy printer name', () => {
-  assert.throws(() => context.estimateTicketCost_({
-    machine: 'printer', paperType: 'Glossy', quantity: 10000, width: 24, length: 100000,
-  }, {
-    ...context.DEFAULT_PRICING,
-    printInkCentsPerSquareFoot: Number.MAX_SAFE_INTEGER,
-    printMaterialCentsPerSquareFoot: { Glossy: Number.MAX_SAFE_INTEGER },
-  }), /too large|could not be calculated/i);
-  const unsafeProperties = propertiesStore({ COST_PRINT_INK_CENTS_PER_SQFT: String(Number.MAX_SAFE_INTEGER) });
-  const unsafeContext = loadContext({ PropertiesService: { getScriptProperties: () => unsafeProperties } });
-  assert.throws(() => unsafeContext.pricingConfig_(), /safe.*cents/i);
-  const row = Array(31).fill('');
-  row[2] = '24-inch roll printer';
-  row[7] = 1;
-  row[8] = 'Standard';
-  row[9] = 24;
-  row[10] = 24;
-  const isolated = loadContext({ PropertiesService: { getScriptProperties: () => propertiesStore({}) } });
-  assert.equal(isolated.estimateFromRow_(row).amountDisplay, '$4.00');
 });
 
 test('Apps Script backend requires a safe print file and rejects bot submissions', () => {
@@ -173,67 +95,11 @@ test('Apps Script backend requires a valid Drive checksum on every direct-upload
   }), /integrity check/i);
 });
 
-test('setup migrates the legacy admin recipient to the managed group only once', () => {
-  const properties = propertiesStore({
-    SPREADSHEET_ID: 'sheet-id',
-    UPLOAD_FOLDER_ID: 'folder-id',
-    ADMIN_NOTIFICATION_EMAILS: 'legacy-owner@example.com',
-    NOTIFICATION_OUTBOX_STARTED_AT: new Date().toISOString(),
-  });
-  const alerts = [];
-  const book = { getId: () => 'sheet-id' };
-  const isolated = loadContext({
-    PropertiesService: { getScriptProperties: () => properties },
-    SpreadsheetApp: {
-      getActiveSpreadsheet: () => book,
-      getUi: () => ({ alert: message => alerts.push(message) }),
-    },
-  });
-  isolated.ensureTicketSheet_ = () => {};
-  isolated.initializeNotificationStatusMarkers_ = () => {};
-  isolated.initializeCostEstimates_ = () => {};
-  isolated.ensureNotificationSheet_ = () => {};
-  isolated.installStatusNotificationTrigger_ = () => {};
-  isolated.installNotificationRetryTrigger_ = () => {};
-  isolated.authorizeLargeFileUploads = () => {};
-  isolated.formatTicketSheet = () => {};
-
-  isolated.setupMandirTicketSystem();
-  assert.equal(properties.getProperty('ADMIN_NOTIFICATION_EMAILS'), 'demandirtickets@googlegroups.com');
-  assert.equal(properties.getProperty('ADMIN_NOTIFICATION_DEFAULT_VERSION'), 'google-group-v1');
-  assert.match(alerts[0], /demandirtickets@googlegroups\.com/);
-
-  properties.setProperty('ADMIN_NOTIFICATION_EMAILS', 'replacement-group@example.com');
-  isolated.setupMandirTicketSystem();
-  assert.equal(properties.getProperty('ADMIN_NOTIFICATION_EMAILS'), 'replacement-group@example.com');
-});
-
 test('Apps Script backend rejects invalid dimensions, deadlines, keys, and attachments', () => {
-  assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), email: 'not-an-email' }), /valid email/i);
-  for (const email of ['a,b@example.com', 'a<victim@example.com>', 'a\0@example.com']) {
-    assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), email }), /valid email/i);
-  }
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), width: '0' }), /valid width/i);
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), neededBy: 'Eventually' }), /needed/i);
-  assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), neededBy: '2026-02-30' }), /needed/i);
-  assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), neededBy: '2026-10-21' }), /past/i);
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), requestKey: 'short' }), /Refresh/i);
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), files: [{ name: 'bad.exe', size: 4, data: 'AAAAAA==' }] }), /PDF, SVG/i);
-});
-
-test('Apps Script reserves codes against raw and DM-prefixed values in the tracking column', () => {
-  const isolated = loadContext();
-  const candidates = ['AAAAAAAAAAAA', 'BBBBBBBBBBBB', 'CCCCCCCCCCCC'];
-  isolated.randomCode_ = () => candidates.shift();
-  const lookedUp = [];
-  isolated.findRow_ = (_sheet, column, value) => {
-    lookedUp.push([column, value]);
-    return value === 'AAAAAAAAAAAA' || value === 'DM-BBBBBBBBBBBB' ? 2 : 0;
-  };
-  assert.equal(isolated.uniqueTrackingCode_({}), 'CCCCCCCCCCCC');
-  assert.ok(lookedUp.some(([, value]) => value === 'AAAAAAAAAAAA'));
-  assert.ok(lookedUp.some(([, value]) => value === 'DM-BBBBBBBBBBBB'));
-  assert.ok(lookedUp.some(([, value]) => value === 'DM-CCCCCCCCCCCC'));
 });
 
 test('upload reservation retries charge daily bytes exactly once per request file', () => {
@@ -354,13 +220,11 @@ test('Drive file verification checks ownership, byte count, and checksum and rem
 });
 
 test('duplicate createTicket requests write one Sheet row and reuse the first ticket', () => {
-  const properties = propertiesStore({ ADMIN_NOTIFICATION_EMAILS: 'owner@example.com, helper@example.com' });
+  const properties = propertiesStore({});
   let rowWritten = false;
   let fileSaves = 0;
   let dailyIncrements = 0;
-  const emails = [];
   const writtenRows = [];
-  const outbox = outboxBook();
   const lock = {
     locked: false,
     waitLock() { this.locked = true; },
@@ -381,16 +245,14 @@ test('duplicate createTicket requests write one Sheet row and reuse the first ti
     PropertiesService: { getScriptProperties: () => properties },
     SpreadsheetApp: { flush() {} },
     Utilities: { getUuid: () => 'ticket-uuid' },
-    MailApp: { sendEmail: message => emails.push(message) },
   });
   isolated.validatePublicTicket_ = () => ({ ...baseTicket(), machine: 'foam', files: [] });
   isolated.ensureTicketSheet_ = () => sheet;
-  isolated.openBook_ = () => outbox.book;
-  const findRow = isolated.findRow_;
-  isolated.findRow_ = (target, column, value) => target === sheet ? (rowWritten ? 2 : 0) : findRow(target, column, value);
+  isolated.openBook_ = () => ({});
+  isolated.findRow_ = () => rowWritten ? 2 : 0;
   isolated.enforceDailyLimit_ = () => {};
   isolated.nextTicketNumber_ = () => 'F-0001';
-  isolated.randomCode_ = () => 'ABCD2345EFGH';
+  isolated.randomCode_ = () => 'ABCD2345';
   isolated.saveFiles_ = () => { fileSaves++; return []; };
   isolated.incrementDailyCount_ = () => { dailyIncrements++; };
   isolated.escapeCell_ = value => value;
@@ -405,467 +267,7 @@ test('duplicate createTicket requests write one Sheet row and reuse the first ti
   assert.equal(duplicate.duplicate, true);
   assert.equal(writtenRows.length, 1);
   assert.equal(writtenRows[0][13], 'pending-review');
-  assert.equal(writtenRows[0].length, 31);
+  assert.equal(writtenRows[0].length, 26);
   assert.equal(fileSaves, 1);
   assert.equal(dailyIncrements, 1);
-  assert.equal(emails.length, 1);
-  assert.equal(emails[0].to, 'owner@example.com');
-  assert.equal(emails[0].bcc, 'helper@example.com');
-  assert.match(emails[0].subject, /DM-ABCD2345EFGH/);
-  assert.match(emails[0].body, /Approximate material cost: \$30\.00/);
-  assert.ok(emails.every(message => message.replyTo === 'requester@example.com'));
-});
-
-test('Apps Script tracker accepts one opaque ticket code and returns only public fields', () => {
-  const row = Array(31).fill('');
-  row[0] = 'private-ticket-id';
-  row[1] = 'F-0012';
-  row[2] = 'Foam cutting';
-  row[3] = 'Private Person';
-  row[13] = 'queued';
-  row[16] = new Date('2026-10-20T12:00:00.000Z');
-  row[19] = 'ABCD2345EFGH';
-  row[22] = 'private@example.com';
-  row[24] = 30;
-  row[25] = '1 estimated 48 × 96 in foam sheet at 2 in thick';
-  row[26] = 'materials-v1';
-  const sheet = {
-    getLastRow: () => 2,
-    getRange: () => ({ getValues: () => [row], getDisplayValue: () => row[19] }),
-  };
-  const isolated = loadContext({ PropertiesService: { getScriptProperties: () => propertiesStore({}) } });
-  isolated.openBook_ = () => ({});
-  isolated.ensureTicketSheet_ = () => sheet;
-  isolated.findRow_ = (_target, column, value) => column === 20 && value === 'ABCD2345EFGH' ? 2 : 0;
-
-  const result = isolated.trackTicket_({ tracking: 'DM-ABCD2345EFGH' });
-  assert.equal(result.ok, true);
-  assert.equal(result.ticket.trackingNumber, 'DM-ABCD2345EFGH');
-  assert.equal(result.ticket.costEstimate.amountDisplay, '$30.00');
-  assert.equal(result.ticket.ticketNumber, undefined);
-  assert.equal(JSON.stringify(result).includes('Private Person'), false);
-  assert.equal(JSON.stringify(result).includes('private@example.com'), false);
-
-  row[1] = 'P-0013';
-  row[2] = 'Poster printing';
-  row[8] = '';
-  row[13] = 'pending-review';
-  row[24] = '';
-  row[25] = '';
-  row[26] = '';
-  const pendingPrint = isolated.trackTicket_({ tracking: 'DM-ABCD2345EFGH' });
-  assert.equal(pendingPrint.ticket.status, 'pending-review');
-  assert.equal(pendingPrint.ticket.costEstimate, null);
-  assert.throws(() => isolated.trackTicket_({ tracking: 'F-0012' }), /not found/i);
-  assert.throws(() => isolated.trackTicket_({ ticket: 'F-0012', code: 'ABCD2345' }), /not found/i);
-  assert.throws(() => isolated.trackTicket_({ tracking: 'ABCD2345EFGH' }), /not found/i);
-});
-
-test('current Node mirror payload maps ticket code and frozen estimate into appended Sheet columns', () => {
-  const properties = propertiesStore({ SHARED_SECRET: 'shared-secret' });
-  const writes = [];
-  const sheet = {
-    getLastRow: () => 1,
-    getRange(row, column, rowCount = 1, columnCount = 1) {
-      return {
-        getValue: () => 0,
-        setValue: value => writes.push({ row, column, values: [[value]] }),
-        setValues: values => writes.push({ row, column, rowCount, columnCount, values }),
-      };
-    },
-  };
-  const lock = { waitLock() {}, hasLock: () => true, releaseLock() {} };
-  const isolated = loadContext({
-    PropertiesService: { getScriptProperties: () => properties },
-    SpreadsheetApp: { flush() {} },
-  });
-  isolated.openBook_ = () => ({});
-  isolated.ensureTicketSheet_ = () => sheet;
-  isolated.findRow_ = () => 0;
-  isolated.jsonResponse_ = value => value;
-  const row = Array(24).fill('');
-  row[0] = 'ticket-id';
-  row[18] = 2;
-  row[19] = 'requester@example.com';
-  row[20] = 'DM-ABCDEFGHJKLM';
-  row[21] = 16.8;
-  row[22] = '12.00 sq ft of glossy material plus ink';
-  row[23] = 'materials-v1';
-
-  assert.equal(isolated.syncServerRow_({ secret: 'shared-secret', row }, lock).ok, true);
-  assert.equal(writes.find(write => write.column === 20).values[0][0], 'DM-ABCDEFGHJKLM');
-  assert.deepEqual([...writes.find(write => write.column === 25).values[0]], [16.8, '12.00 sq ft of glossy material plus ink', 'materials-v1']);
-});
-
-test('installed status edit handler emails the requester and advances revision metadata', () => {
-  const sent = [];
-  const writes = [];
-  const outbox = outboxBook();
-  const lock = {
-    locked: false,
-    waitLock() { this.locked = true; },
-    hasLock() { return this.locked; },
-    releaseLock() { this.locked = false; },
-  };
-  const row = Array(31).fill('');
-  row[1] = 'F-0007';
-  row[2] = 'Foam cutting';
-  row[13] = 'ready';
-  row[18] = 3;
-  row[19] = 'JKLM2345NPQR';
-  row[22] = 'requester@example.com';
-  row[23] = 'in-progress';
-  row[24] = 30;
-  row[25] = '1 estimated foam sheet';
-  row[26] = 'materials-v1';
-  const sheet = {
-    getName: () => 'Tickets',
-    getRange(_row, column, _rows, columns) {
-      if (column === 1 && columns === 31) return { getValues: () => [row] };
-      return { setValue: value => writes.push({ column, value }) };
-    },
-  };
-  const range = {
-    getSheet: () => sheet,
-    getColumn: () => 14,
-    getNumRows: () => 1,
-    getNumColumns: () => 1,
-    getDisplayValues: () => [['ready']],
-    getRow: () => 2,
-  };
-  const isolated = loadContext({
-    LockService: { getScriptLock: () => lock },
-    PropertiesService: { getScriptProperties: () => propertiesStore({}) },
-    SpreadsheetApp: { flush() {} },
-    MailApp: { sendEmail: message => sent.push(message) },
-  });
-  isolated.openBook_ = () => outbox.book;
-
-  isolated.onTicketStatusEdit({ range, oldValue: 'in-progress' });
-
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0].to, 'requester@example.com');
-  assert.equal(sent[0].replyTo, 'demandirtickets@googlegroups.com');
-  assert.match(sent[0].subject, /DM-JKLM2345NPQR.*ready for pickup/i);
-  assert.match(sent[0].body, /Approximate material cost: \$30\.00/);
-  assert.equal(writes.find(write => write.column === 19).value, 4);
-  assert.ok(!Number.isNaN(Date.parse(writes.find(write => write.column === 18).value)));
-});
-
-test('installed status edit handler notifies every requester in a bulk status edit', () => {
-  const sent = [];
-  const writes = [];
-  const outbox = outboxBook();
-  const lock = {
-    locked: false,
-    waitLock() { this.locked = true; },
-    hasLock() { return this.locked; },
-    releaseLock() { this.locked = false; },
-  };
-  const rows = [2, 3].map((rowNumber, index) => {
-    const row = Array(31).fill('');
-    row[0] = `ticket-${rowNumber}`;
-    row[1] = `F-000${rowNumber}`;
-    row[2] = 'Foam cutting';
-    row[13] = 'ready';
-    row[18] = index + 1;
-    row[22] = `requester${rowNumber}@example.com`;
-    row[23] = 'in-progress';
-    return row;
-  });
-  const sheet = {
-    getName: () => 'Tickets',
-    getRange(rowNumber, column, _rowCount, columns) {
-      if (column === 1 && columns === 31) return { getValues: () => [rows[rowNumber - 2]] };
-      return { setValue: value => writes.push({ rowNumber, column, value }) };
-    },
-  };
-  const range = {
-    getSheet: () => sheet,
-    getColumn: () => 14,
-    getNumRows: () => 2,
-    getNumColumns: () => 1,
-    getDisplayValues: () => [['ready'], ['ready']],
-    getRow: () => 2,
-  };
-  const isolated = loadContext({
-    LockService: { getScriptLock: () => lock },
-    PropertiesService: { getScriptProperties: () => propertiesStore({}) },
-    SpreadsheetApp: { flush() {} },
-    MailApp: { sendEmail: message => sent.push(message) },
-  });
-  isolated.openBook_ = () => outbox.book;
-
-  isolated.onTicketStatusEdit({ range });
-
-  assert.deepEqual(sent.map(message => message.to), ['requester2@example.com', 'requester3@example.com']);
-  assert.deepEqual(writes.filter(write => write.column === 19).map(write => write.value), [2, 3]);
-});
-
-test('bulk status edits do not notify or revise rows already at that status', () => {
-  const sent = [];
-  const writes = [];
-  const outbox = outboxBook();
-  const properties = propertiesStore({});
-  const lock = {
-    locked: false,
-    waitLock() { this.locked = true; },
-    hasLock() { return this.locked; },
-    releaseLock() { this.locked = false; },
-  };
-  const rows = [2, 3].map(rowNumber => {
-    const row = Array(31).fill('');
-    row[0] = `ticket-${rowNumber}`;
-    row[1] = `F-000${rowNumber}`;
-    row[2] = 'Foam cutting';
-    row[13] = 'ready';
-    row[18] = 2;
-    row[22] = `requester${rowNumber}@example.com`;
-    row[23] = 'ready';
-    return row;
-  });
-  const sheet = {
-    getName: () => 'Tickets',
-    getRange(rowNumber, column, _rowCount, columns) {
-      if (column === 1 && columns === 31) return { getValues: () => [rows[rowNumber - 2]] };
-      return { setValue: value => writes.push({ rowNumber, column, value }) };
-    },
-  };
-  const range = {
-    getSheet: () => sheet,
-    getColumn: () => 14,
-    getNumRows: () => 2,
-    getNumColumns: () => 1,
-    getDisplayValues: () => [['ready'], ['ready']],
-    getRow: () => 2,
-  };
-  const isolated = loadContext({
-    LockService: { getScriptLock: () => lock },
-    PropertiesService: { getScriptProperties: () => properties },
-    SpreadsheetApp: { flush() {} },
-    MailApp: { sendEmail: message => sent.push(message) },
-  });
-  isolated.openBook_ = () => outbox.book;
-
-  isolated.onTicketStatusEdit({ range });
-
-  assert.equal(sent.length, 0);
-  assert.equal(writes.length, 0);
-});
-
-test('Apps Script persists failed admin and customer notifications and retries them', () => {
-  const outbox = outboxBook();
-  const properties = propertiesStore({ ADMIN_NOTIFICATION_EMAILS: 'owner@example.com, helper@example.com' });
-  const sent = [];
-  let failing = true;
-  const lock = {
-    locked: false,
-    waitLock() { this.locked = true; },
-    hasLock() { return this.locked; },
-    releaseLock() { this.locked = false; },
-  };
-  const isolated = loadContext({
-    LockService: { getScriptLock: () => lock },
-    PropertiesService: { getScriptProperties: () => properties },
-    SpreadsheetApp: { flush() {} },
-    MailApp: {
-      sendEmail(message) {
-        if (failing) throw new Error('Mail service unavailable');
-        sent.push(message);
-      },
-    },
-  });
-  isolated.openBook_ = () => outbox.book;
-
-  const estimate = isolated.estimateTicketCost_(baseTicket(), isolated.DEFAULT_PRICING);
-  const adminTicket = { ...baseTicket(), trackingNumber: 'DM-ABCD2345EFGH', costEstimate: estimate };
-  assert.equal(isolated.notifyAdminsOfNewTicket_(adminTicket, 'F-0008', properties, outbox.book), true);
-  const customerRow = Array(31).fill('');
-  customerRow[0] = 'ticket-id';
-  customerRow[1] = 'F-0008';
-  customerRow[2] = 'Foam cutting';
-  customerRow[7] = 2;
-  customerRow[9] = 20;
-  customerRow[10] = 36;
-  customerRow[11] = 2;
-  customerRow[19] = 'DM-ABCD2345EFGH';
-  customerRow[22] = 'requester@example.com';
-  customerRow[24] = estimate.amountCents / 100;
-  customerRow[25] = estimate.basis;
-  customerRow[26] = estimate.version;
-  assert.equal(isolated.notifyCustomerOfStatus_(customerRow, 'ready', 2, outbox.book), true);
-
-  assert.equal(outbox.rows.length, 3);
-  assert.deepEqual(outbox.rows.slice(1).map(row => row[7]), [1, 1]);
-  assert.ok(outbox.rows.slice(1).every(row => /Mail service unavailable/.test(row[8])));
-
-  outbox.rows.slice(1).forEach(row => { row[9] = new Date(0); });
-  failing = false;
-  assert.deepEqual({ ...isolated.retryTicketNotifications() }, { sent: 2, pending: 0 });
-  assert.equal(outbox.rows.length, 3);
-  assert.ok(outbox.rows.slice(1).every(row => !Number.isNaN(Date.parse(row[10]))));
-  assert.deepEqual(sent.map(message => message.to), ['owner@example.com', 'requester@example.com']);
-  assert.equal(sent[0].bcc, 'helper@example.com');
-  assert.equal(sent[0].replyTo, 'requester@example.com');
-  assert.match(sent[0].subject, /DM-ABCD2345EFGH/);
-  assert.match(sent[0].body, /Approximate material cost: \$30\.00/);
-  assert.equal(sent[1].replyTo, 'owner@example.com');
-  assert.match(sent[1].subject, /DM-ABCD2345EFGH/);
-  assert.match(sent[1].body, /Approximate material cost: \$30\.00/);
-});
-
-test('periodic reconciliation recovers notifications missed by a status-edit lock timeout', () => {
-  const outbox = outboxBook();
-  const properties = propertiesStore({
-    ADMIN_NOTIFICATION_EMAILS: 'owner@example.com',
-    NOTIFICATION_OUTBOX_STARTED_AT: '2024-01-01T00:00:00.000Z',
-  });
-  const ticket = Array(31).fill('');
-  ticket[0] = 'ticket-id';
-  ticket[1] = 'F-0099';
-  ticket[2] = 'Foam cutting';
-  ticket[3] = 'Requester';
-  ticket[4] = 'Events';
-  ticket[5] = 'Stage sign';
-  ticket[12] = 'This week';
-  ticket[13] = 'ready';
-  ticket[16] = new Date('2024-02-01T00:00:00.000Z');
-  ticket[18] = 1;
-  ticket[20] = '0123456789abcdef0123456789abcdef';
-  ticket[21] = 'GitHub Pages';
-  ticket[22] = 'requester@example.com';
-  ticket[23] = 'in-progress';
-  const metadataWrites = [];
-  const ticketSheet = {
-    getLastRow: () => 2,
-    getRange(_row, column, _rowCount, columns) {
-      if (column === 1 && columns === 31) return { getValues: () => [ticket] };
-      return { setValue: value => { ticket[column - 1] = value; metadataWrites.push({ column, value }); } };
-    },
-  };
-  let lockFails = true;
-  const lock = {
-    locked: false,
-    waitLock() {
-      if (lockFails) throw new Error('Timed out waiting for lock');
-      this.locked = true;
-    },
-    hasLock() { return this.locked; },
-    releaseLock() { this.locked = false; },
-  };
-  const sent = [];
-  const isolated = loadContext({
-    LockService: { getScriptLock: () => lock },
-    PropertiesService: { getScriptProperties: () => properties },
-    SpreadsheetApp: { flush() {} },
-    MailApp: { sendEmail: message => sent.push(message) },
-  });
-  isolated.openBook_ = () => outbox.book;
-  isolated.ensureTicketSheet_ = () => ticketSheet;
-  const editSheet = {
-    getName: () => 'Tickets',
-    getRange: () => ({ getDisplayValue: () => 'ticket-id' }),
-  };
-  const range = {
-    getSheet: () => editSheet,
-    getColumn: () => 14,
-    getNumRows: () => 1,
-    getNumColumns: () => 1,
-    getDisplayValues: () => [['ready']],
-    getRow: () => 2,
-  };
-
-  assert.equal(isolated.onTicketStatusEdit({ range, oldValue: 'in-progress' }), false);
-  lockFails = false;
-  const findRow = isolated.findRow_;
-  isolated.findRow_ = (target, column, value) => target === ticketSheet ? 2 : findRow(target, column, value);
-  assert.deepEqual({ ...isolated.retryTicketNotifications() }, { sent: 2, pending: 0 });
-  assert.deepEqual(sent.map(message => message.to), ['requester@example.com', 'owner@example.com']);
-  assert.equal(metadataWrites.find(write => write.column === 19).value, 2);
-  assert.equal(metadataWrites.find(write => write.column === 24).value, 'ready');
-  assert.deepEqual({ ...isolated.retryTicketNotifications() }, { sent: 0, pending: 0 });
-  assert.equal(sent.length, 2);
-});
-
-test('notification reconciliation isolates an invalid legacy recipient and continues with later tickets', () => {
-  const outbox = outboxBook();
-  const properties = propertiesStore({
-    ADMIN_NOTIFICATION_EMAILS: 'owner@example.com',
-    NOTIFICATION_OUTBOX_STARTED_AT: '2024-01-01T00:00:00.000Z',
-  });
-  const tickets = ['not-an-email', 'valid@example.com'].map((email, index) => {
-    const row = Array(31).fill('');
-    row[0] = `ticket-${index + 1}`;
-    row[1] = `F-010${index}`;
-    row[2] = 'Foam cutting';
-    row[13] = 'ready';
-    row[16] = new Date('2024-02-01T00:00:00.000Z');
-    row[18] = 1;
-    row[21] = 'GitHub Pages';
-    row[22] = email;
-    row[23] = 'in-progress';
-    return row;
-  });
-  const ticketSheet = {
-    getLastRow: () => 3,
-    getRange(rowNumber, column, _rowCount, columns) {
-      if (rowNumber === 2 && column === 1 && columns === 31) return { getValues: () => tickets };
-      return { setValue: value => { tickets[rowNumber - 2][column - 1] = value; } };
-    },
-  };
-  const errors = [];
-  const isolated = loadContext({
-    console: { error: message => errors.push(String(message)), log() {} },
-    PropertiesService: { getScriptProperties: () => properties },
-    SpreadsheetApp: { flush() {} },
-  });
-  isolated.ensureTicketSheet_ = () => ticketSheet;
-
-  assert.equal(isolated.reconcileNotifications_(outbox.book), 1);
-  assert.equal(outbox.rows.length, 2);
-  assert.equal(outbox.rows[1][1], 'valid@example.com');
-  assert.equal(tickets[0][23], 'in-progress', 'the invalid recipient remains recoverable after its email is corrected');
-  assert.equal(tickets[1][23], 'ready');
-  assert.ok(errors.some(message => /ticket-1.*valid customer email/i.test(message)));
-});
-
-test('pending status recovery isolates an invalid legacy recipient and continues with later edits', () => {
-  const outbox = outboxBook();
-  const properties = propertiesStore({
-    ADMIN_NOTIFICATION_EMAILS: 'owner@example.com',
-    PENDING_STATUS_NOTIFICATION_ticket_bad: JSON.stringify({ status: 'ready' }),
-    PENDING_STATUS_NOTIFICATION_ticket_good: JSON.stringify({ status: 'ready' }),
-  });
-  const tickets = new Map([
-    ['ticket_bad', ['ticket_bad', 'F-0200', 'Foam cutting', '', '', '', '', '', '', '', '', '', '', 'ready', '', '', '', '', 1, '', '', '', 'not-an-email', 'in-progress', '', '', '']],
-    ['ticket_good', ['ticket_good', 'F-0201', 'Foam cutting', '', '', '', '', '', '', '', '', '', '', 'ready', '', '', '', '', 1, '', '', '', 'valid@example.com', 'in-progress', '', '', '']],
-  ]);
-  const rowNumbers = new Map([['ticket_bad', 2], ['ticket_good', 3]]);
-  const ticketSheet = {
-    getLastRow: () => 3,
-    getRange(rowNumber, column, _rowCount, columns) {
-      const row = [...tickets.values()][rowNumber - 2];
-      if (column === 1 && columns === 31) return { getValues: () => [row] };
-      return { setValue: value => { row[column - 1] = value; } };
-    },
-  };
-  const errors = [];
-  const isolated = loadContext({
-    console: { error: message => errors.push(String(message)), log() {} },
-    PropertiesService: { getScriptProperties: () => properties },
-    SpreadsheetApp: { flush() {} },
-  });
-  const originalFindRow = isolated.findRow_;
-  isolated.ensureTicketSheet_ = () => ticketSheet;
-  isolated.findRow_ = (sheet, column, value) => sheet === ticketSheet && column === 1
-    ? rowNumbers.get(String(value)) || 0
-    : originalFindRow(sheet, column, value);
-
-  isolated.reconcilePendingStatusEdits_(outbox.book, properties);
-
-  assert.equal(outbox.rows.length, 2);
-  assert.equal(outbox.rows[1][1], 'valid@example.com');
-  assert.equal(properties.getProperty('PENDING_STATUS_NOTIFICATION_ticket_bad') !== null, true);
-  assert.equal(properties.getProperty('PENDING_STATUS_NOTIFICATION_ticket_good'), null);
-  assert.ok(errors.some(message => /ticket_bad.*valid customer email/i.test(message)));
 });

@@ -1,43 +1,18 @@
-// Delaware Mandir Workshop Tickets — Google Sheets + Drive backend for GitHub Pages.
+// Mandir Workshop Tickets — Google Sheets + Drive backend for GitHub Pages.
 // Bind this script to a private Google Sheet, run setupMandirTicketSystem once,
 // then deploy it as a web app that executes as you and is reachable by Anyone.
 
 var TICKET_SHEET = 'Tickets';
-var NOTIFICATION_SHEET = 'Notification Outbox';
-var DEFAULT_ADMIN_NOTIFICATION_EMAIL = 'demandirtickets@googlegroups.com';
-var ADMIN_NOTIFICATION_DEFAULT_VERSION = 'google-group-v1';
 var HEADERS = [
   'Ticket ID', 'Queue number', 'Machine', 'Name', 'Department', 'Purpose', 'Phone',
   'Quantity', 'Paper', 'Width (in)', 'Length (in)', 'Thickness (in)', 'Needed by',
   'Status', 'Notes', 'Files', 'Created', 'Updated', 'Revision',
-  'Tracking code', 'Request key', 'Source', 'Customer email', 'Last notified status',
-  'Approx. cost (USD)', 'Cost basis', 'Cost estimate version',
-  'Material usage', 'Staff history', 'SMS consent', 'Review reason'
-];
-var NOTIFICATION_HEADERS = [
-  'Notification ID', 'To', 'Bcc', 'Reply to', 'Subject', 'Body', 'Created',
-  'Attempts', 'Last error', 'Next attempt', 'Delivered'
+  'Tracking code', 'Request key', 'Source', 'Material usage', 'Staff history', 'SMS consent', 'Review reason'
 ];
 var STATUSES = ['pending-review', 'declined', 'queued', 'in-progress', 'ready', 'collected', 'cancelled'];
 var MACHINES = { printer: 'Poster printing', foam: 'Foam cutting' };
 var PAPER_TYPES = ['Polypropylene', 'Adhesive', 'Canvas', 'Glossy', 'Standard'];
 var DEADLINES = ['Today', 'Tomorrow', 'This week', 'No rush'];
-var DELAWARE_TIME_ZONE = 'America/New_York';
-var DEFAULT_PRICING = {
-  version: 'materials-v1',
-  foamSheetWidthIn: 48,
-  foamSheetLengthIn: 96,
-  foamCentsPerInch: 1500,
-  foamMinimumSheetCents: 1500,
-  printInkCentsPerSquareFoot: 60,
-  printMaterialCentsPerSquareFoot: {
-    Standard: 40,
-    Glossy: 80,
-    Polypropylene: 100,
-    Adhesive: 125,
-    Canvas: 175
-  }
-};
 var MAX_FILES = 5;
 var MAX_FILE_BYTES = 200 * 1024 * 1024;
 var MAX_TOTAL_BYTES = 200 * 1024 * 1024;
@@ -56,8 +31,6 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('Ticket system')
     .addItem('Set up backend', 'setupMandirTicketSystem')
     .addItem('Refresh sheet formatting', 'formatTicketSheet')
-    .addItem('Configure notification emails', 'configureNotificationEmails')
-    .addItem('Hold unreviewed queued tickets', 'holdUnreviewedQueueForAdminReview')
     .addItem('Audit ticket files', 'showTicketPipelineAudit')
     .addToUi();
 }
@@ -70,210 +43,10 @@ function setupMandirTicketSystem() {
   if (!properties.getProperty('UPLOAD_FOLDER_ID')) {
     properties.setProperty('UPLOAD_FOLDER_ID', DriveApp.createFolder('Mandir Workshop Ticket Files').getId());
   }
-  if (properties.getProperty('ADMIN_NOTIFICATION_DEFAULT_VERSION') !== ADMIN_NOTIFICATION_DEFAULT_VERSION) {
-    properties.setProperty('ADMIN_NOTIFICATION_EMAILS', DEFAULT_ADMIN_NOTIFICATION_EMAIL);
-    properties.setProperty('ADMIN_NOTIFICATION_DEFAULT_VERSION', ADMIN_NOTIFICATION_DEFAULT_VERSION);
-  }
-  if (!properties.getProperty('NOTIFICATION_OUTBOX_STARTED_AT')) {
-    properties.setProperty('NOTIFICATION_OUTBOX_STARTED_AT', new Date().toISOString());
-  }
-  initializePricingProperties_(properties);
   ensureTicketSheet_(book);
-  initializeNotificationStatusMarkers_(book);
-  initializeCostEstimates_(book);
-  ensureNotificationSheet_(book);
-  installStatusNotificationTrigger_(book);
-  installNotificationRetryTrigger_();
   authorizeLargeFileUploads();
   formatTicketSheet();
-  SpreadsheetApp.getUi().alert('The private ticket sheet, Drive upload folder, and email notifications are ready. New-ticket alerts and customer replies use ' + DEFAULT_ADMIN_NOTIFICATION_EMAIL + '. Manage recipients through the Google Group, then deploy this script as a web app.');
-}
-
-function initializePricingProperties_(properties) {
-  var defaults = {
-    COST_ESTIMATE_VERSION: DEFAULT_PRICING.version,
-    COST_FOAM_SHEET_WIDTH_IN: DEFAULT_PRICING.foamSheetWidthIn,
-    COST_FOAM_SHEET_LENGTH_IN: DEFAULT_PRICING.foamSheetLengthIn,
-    COST_FOAM_CENTS_PER_INCH: DEFAULT_PRICING.foamCentsPerInch,
-    COST_FOAM_MIN_SHEET_CENTS: DEFAULT_PRICING.foamMinimumSheetCents,
-    COST_PRINT_INK_CENTS_PER_SQFT: DEFAULT_PRICING.printInkCentsPerSquareFoot,
-    COST_PRINT_STANDARD_CENTS_PER_SQFT: DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Standard,
-    COST_PRINT_GLOSSY_CENTS_PER_SQFT: DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Glossy,
-    COST_PRINT_POLYPROPYLENE_CENTS_PER_SQFT: DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Polypropylene,
-    COST_PRINT_ADHESIVE_CENTS_PER_SQFT: DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Adhesive,
-    COST_PRINT_CANVAS_CENTS_PER_SQFT: DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Canvas
-  };
-  Object.keys(defaults).forEach(function(key) {
-    if (properties.getProperty(key) === null) properties.setProperty(key, String(defaults[key]));
-  });
-}
-
-function pricingNumber_(properties, key, fallback, positive) {
-  var configured = properties.getProperty(key);
-  var value = Number(configured === null || configured === '' ? fallback : configured);
-  if (!isFinite(value) || value < 0 || (positive && (value <= 0 || value > 1000000))
-    || (!positive && (!Number.isSafeInteger(value) || value > 1000000000))) {
-    throw new Error(key + ' must be a safe ' + (positive ? 'positive dimension' : 'non-negative whole number of cents') + '.');
-  }
-  return value;
-}
-
-function pricingConfig_() {
-  var properties = PropertiesService.getScriptProperties();
-  return {
-    version: String(properties.getProperty('COST_ESTIMATE_VERSION') || DEFAULT_PRICING.version),
-    foamSheetWidthIn: pricingNumber_(properties, 'COST_FOAM_SHEET_WIDTH_IN', DEFAULT_PRICING.foamSheetWidthIn, true),
-    foamSheetLengthIn: pricingNumber_(properties, 'COST_FOAM_SHEET_LENGTH_IN', DEFAULT_PRICING.foamSheetLengthIn, true),
-    foamCentsPerInch: pricingNumber_(properties, 'COST_FOAM_CENTS_PER_INCH', DEFAULT_PRICING.foamCentsPerInch, false),
-    foamMinimumSheetCents: pricingNumber_(properties, 'COST_FOAM_MIN_SHEET_CENTS', DEFAULT_PRICING.foamMinimumSheetCents, false),
-    printInkCentsPerSquareFoot: pricingNumber_(properties, 'COST_PRINT_INK_CENTS_PER_SQFT', DEFAULT_PRICING.printInkCentsPerSquareFoot, false),
-    printMaterialCentsPerSquareFoot: {
-      Standard: pricingNumber_(properties, 'COST_PRINT_STANDARD_CENTS_PER_SQFT', DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Standard, false),
-      Glossy: pricingNumber_(properties, 'COST_PRINT_GLOSSY_CENTS_PER_SQFT', DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Glossy, false),
-      Polypropylene: pricingNumber_(properties, 'COST_PRINT_POLYPROPYLENE_CENTS_PER_SQFT', DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Polypropylene, false),
-      Adhesive: pricingNumber_(properties, 'COST_PRINT_ADHESIVE_CENTS_PER_SQFT', DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Adhesive, false),
-      Canvas: pricingNumber_(properties, 'COST_PRINT_CANVAS_CENTS_PER_SQFT', DEFAULT_PRICING.printMaterialCentsPerSquareFoot.Canvas, false)
-    }
-  };
-}
-
-function estimateTicketCost_(ticket, pricing) {
-  pricing = pricing || pricingConfig_();
-  var disclaimer = 'Approximate material cost only; labor, finishing, tax, and design time are not included. Final cost may change.';
-  if (ticket.machine === 'printer') {
-    var squareFeet = Number(ticket.quantity) * Number(ticket.width) * Number(ticket.length) / 144;
-    var materialRate = pricing.printMaterialCentsPerSquareFoot[ticket.paperType];
-    if (!isFinite(squareFeet) || squareFeet <= 0 || !Number.isSafeInteger(materialRate)
-      || !Number.isSafeInteger(pricing.printInkCentsPerSquareFoot)) throw new Error('The print cost estimate could not be calculated.');
-    var paperCents = Math.round(squareFeet * materialRate);
-    var inkCents = Math.round(squareFeet * pricing.printInkCentsPerSquareFoot);
-    var printTotal = paperCents + inkCents;
-    if (!Number.isSafeInteger(paperCents) || paperCents < 0 || !Number.isSafeInteger(inkCents) || inkCents < 0
-      || !Number.isSafeInteger(printTotal) || printTotal < 0) throw new Error('The print cost estimate is too large.');
-    return {
-      version: pricing.version,
-      currency: 'USD',
-      amountCents: printTotal,
-      amountDisplay: '$' + (printTotal / 100).toFixed(2),
-      basis: squareFeet.toFixed(2) + ' sq ft of ' + String(ticket.paperType).toLowerCase() + ' material plus ink',
-      disclaimer: disclaimer
-    };
-  }
-  var width = Number(ticket.width);
-  var length = Number(ticket.length);
-  var quantity = Number(ticket.quantity);
-  var normal = Math.floor(pricing.foamSheetWidthIn / width) * Math.floor(pricing.foamSheetLengthIn / length);
-  var rotated = Math.floor(pricing.foamSheetWidthIn / length) * Math.floor(pricing.foamSheetLengthIn / width);
-  var piecesPerSheet = Math.max(normal, rotated);
-  var sheets;
-  if (piecesPerSheet > 0) sheets = Math.ceil(quantity / piecesPerSheet);
-  else {
-    var tiledNormal = Math.ceil(width / pricing.foamSheetWidthIn) * Math.ceil(length / pricing.foamSheetLengthIn);
-    var tiledRotated = Math.ceil(width / pricing.foamSheetLengthIn) * Math.ceil(length / pricing.foamSheetWidthIn);
-    sheets = Math.min(tiledNormal, tiledRotated) * quantity;
-  }
-  var perSheetCents = Math.max(pricing.foamMinimumSheetCents, Math.round(Number(ticket.thickness) * pricing.foamCentsPerInch));
-  var foamTotal = sheets * perSheetCents;
-  if (!Number.isSafeInteger(sheets) || sheets < 1 || !Number.isSafeInteger(perSheetCents) || perSheetCents < 0
-    || !Number.isSafeInteger(foamTotal) || foamTotal < 0) throw new Error('The foam cost estimate is too large.');
-  return {
-    version: pricing.version,
-    currency: 'USD',
-    amountCents: foamTotal,
-    amountDisplay: '$' + (foamTotal / 100).toFixed(2),
-    basis: sheets + ' estimated ' + pricing.foamSheetWidthIn + ' × ' + pricing.foamSheetLengthIn + ' in foam sheet' + (sheets === 1 ? '' : 's') + ' at ' + Number(ticket.thickness) + ' in thick',
-    disclaimer: disclaimer
-  };
-}
-
-function estimateFromRow_(row) {
-  var storedAmount = Number(row[24]);
-  if (row[24] !== '' && isFinite(storedAmount) && storedAmount >= 0) {
-    var cents = Math.round(storedAmount * 100);
-    if (!Number.isSafeInteger(cents)) throw new Error('The stored cost estimate is too large.');
-    return {
-      version: String(row[26] || DEFAULT_PRICING.version),
-      currency: 'USD',
-      amountCents: cents,
-      amountDisplay: '$' + (cents / 100).toFixed(2),
-      basis: String(row[25] || 'Stored material estimate'),
-      disclaimer: 'Approximate material cost only; labor, finishing, tax, and design time are not included. Final cost may change.'
-    };
-  }
-  var machineName = String(row[2]);
-  return estimateTicketCost_({
-    machine: machineName === MACHINES.printer || machineName === '24-inch roll printer' ? 'printer' : 'foam',
-    quantity: row[7],
-    paperType: String(row[8]),
-    width: row[9],
-    length: row[10],
-    thickness: row[11]
-  });
-}
-
-function initializeCostEstimates_(book) {
-  var sheet = ensureTicketSheet_(book);
-  if (sheet.getLastRow() < 2) return;
-  var rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADERS.length).getValues();
-  rows.forEach(function(row, index) {
-    if (row[24] !== '') return;
-    var machineName = String(row[2]);
-    var isPrinter = machineName === MACHINES.printer || machineName === '24-inch roll printer';
-    if (isPrinter && !String(row[8] || '').trim()) return;
-    try {
-      var estimate = estimateFromRow_(row);
-      sheet.getRange(index + 2, 25, 1, 3).setValues([[estimate.amountCents / 100, estimate.basis, estimate.version]]);
-    } catch (error) {
-      console.error('Could not initialize cost estimate for row ' + (index + 2) + ': ' + error.message);
-    }
-  });
-}
-
-function formatCostEstimate_(estimate) {
-  return 'Approximate material cost: ' + estimate.amountDisplay + '\nBased on: ' + estimate.basis + '\n' + estimate.disclaimer;
-}
-
-function publicTrackingNumber_(stored) {
-  var value = String(stored || '').trim().toUpperCase();
-  return value.indexOf('DM-') === 0 ? value : 'DM-' + value;
-}
-
-function uniqueTrackingCode_(sheet) {
-  for (var attempt = 0; attempt < 100; attempt++) {
-    var candidate = randomCode_(12);
-    if (!findRow_(sheet, 20, candidate) && !findRow_(sheet, 20, publicTrackingNumber_(candidate))) return candidate;
-  }
-  throw new Error('Could not reserve a unique ticket code.');
-}
-
-function configureNotificationEmails() {
-  var ui = SpreadsheetApp.getUi();
-  var properties = PropertiesService.getScriptProperties();
-  var response = ui.prompt(
-    'Admin ticket notifications',
-    'Enter every admin email that should receive new-ticket notifications, separated by commas.',
-    ui.ButtonSet.OK_CANCEL
-  );
-  if (response.getSelectedButton() !== ui.Button.OK) return false;
-  var emails = parseEmailList_(response.getResponseText());
-  if (!emails.length) throw new Error('Enter at least one admin notification email.');
-  properties.setProperty('ADMIN_NOTIFICATION_EMAILS', emails.join(','));
-  ui.alert('New-ticket notifications will be sent to ' + emails.length + ' admin' + (emails.length === 1 ? '.' : 's.'));
-  return true;
-}
-
-function installStatusNotificationTrigger_(book) {
-  var exists = ScriptApp.getProjectTriggers().some(function(trigger) {
-    return trigger.getHandlerFunction() === 'onTicketStatusEdit';
-  });
-  if (!exists) ScriptApp.newTrigger('onTicketStatusEdit').forSpreadsheet(book).onEdit().create();
-}
-
-function installNotificationRetryTrigger_() {
-  var exists = ScriptApp.getProjectTriggers().some(function(trigger) {
-    return trigger.getHandlerFunction() === 'retryTicketNotifications';
-  });
-  if (!exists) ScriptApp.newTrigger('retryTicketNotifications').timeBased().everyMinutes(5).create();
+  SpreadsheetApp.getUi().alert('The private ticket sheet and Drive upload folder are ready. Deploy this script as a web app next.');
 }
 
 function authorizeLargeFileUploads() {
@@ -341,12 +114,8 @@ function formatTicketSheet() {
   sheet.setColumnWidth(6, 260);
   sheet.setColumnWidth(15, 260);
   sheet.setColumnWidth(16, 260);
-  sheet.setColumnWidth(25, 125);
-  sheet.setColumnWidth(26, 320);
-  sheet.getRange(2, 25, Math.max(sheet.getMaxRows() - 1, 1), 1).setNumberFormat('$0.00');
   sheet.hideColumns(1);
   sheet.hideColumns(20, 2);
-  sheet.hideColumns(24);
   var validation = SpreadsheetApp.newDataValidation().requireValueInList(STATUSES, true).setAllowInvalid(false).build();
   sheet.getRange(2, 14, Math.max(sheet.getMaxRows() - 1, 1), 1).setDataValidation(validation);
   return true;
@@ -370,18 +139,12 @@ function doPost(event) {
     var existing = findRow_(sheet, 21, request.requestKey);
     if (existing) {
       properties.deleteProperty(uploadReservationKey_(request.requestKey));
-      if (lock.hasLock()) lock.releaseLock();
-      try { retryTicketNotifications(); }
-      catch (notificationError) { console.error('Could not retry notifications: ' + notificationError.message); }
       return jsonResponse_({ ok: true, duplicate: true });
     }
     enforceDailyLimit_(properties);
 
     var ticketNumber = nextTicketNumber_(sheet, request.machine);
-    var trackingCode = uniqueTrackingCode_(sheet);
-    var costEstimate = request.machine === 'foam' ? estimateTicketCost_(request) : null;
-    request.trackingNumber = publicTrackingNumber_(trackingCode);
-    request.costEstimate = costEstimate;
+    var trackingCode = randomCode_(8);
     var createdAt = new Date();
     var uploadedFiles = saveFiles_(request.files, ticketNumber, request.requestKey, properties);
     var row = [
@@ -389,19 +152,12 @@ function doPost(event) {
       request.department, request.purpose, request.phone, request.quantity,
       request.paperType, request.width, request.length, request.thickness,
       request.neededBy, 'pending-review', request.notes, uploadedFiles.join('\n'),
-      createdAt, createdAt, 1, trackingCode, request.requestKey, 'GitHub Pages', request.email, 'pending-review',
-      costEstimate ? costEstimate.amountCents / 100 : '', costEstimate ? costEstimate.basis : '', costEstimate ? costEstimate.version : '',
-      '[]', '[]', request.smsConsent ? 'yes' : '', ''
+      createdAt, createdAt, 1, trackingCode, request.requestKey, 'GitHub Pages', '[]', '[]', request.smsConsent ? 'yes' : '', ''
     ];
     sheet.getRange(sheet.getLastRow() + 1, 1, 1, HEADERS.length).setValues([row.map(escapeCell_)]);
     SpreadsheetApp.flush();
     incrementDailyCount_(properties);
     properties.deleteProperty(uploadReservationKey_(request.requestKey));
-    try { notifyAdminsOfNewTicket_(request, ticketNumber, properties, openBook_(), true); }
-    catch (notificationError) { console.error('Could not queue admin notification: ' + notificationError.message); }
-    if (lock.hasLock()) lock.releaseLock();
-    try { retryTicketNotifications(); }
-    catch (notificationError) { console.error('Could not deliver queued notifications: ' + notificationError.message); }
     return jsonResponse_({ ok: true });
   } catch (error) {
     console.error(error && error.stack ? error.stack : error);
@@ -417,7 +173,7 @@ function doGet(event) {
   try {
     var params = event.parameter || {};
     if (params.action === 'queue') return javascriptResponse_(callback, publicWorkshopQueue_());
-    if (params.action === 'health') return javascriptResponse_(callback, { ok: true, service: 'Delaware Mandir Workshop Tickets' });
+    if (params.action === 'health') return javascriptResponse_(callback, { ok: true, service: 'Mandir Workshop Tickets' });
     if (params.action === 'beginUpload') return javascriptResponse_(callback, beginUpload_(params));
     if (params.action !== 'track') return javascriptResponse_(callback, { ok: false, error: 'Unsupported action.' });
     return javascriptResponse_(callback, trackTicket_(params));
@@ -432,30 +188,27 @@ function trackTicket_(params) {
   var byRequestKey = String(params.requestKey || '').toLowerCase();
   if (/^[a-f0-9]{32}$/.test(byRequestKey)) rowNumber = findRow_(sheet, 21, byRequestKey);
   if (!rowNumber) {
-    var tracking = String(params.tracking || '').trim().toUpperCase();
-    var code = tracking.indexOf('DM-') === 0 ? tracking.slice(3) : '';
-    if (/^[A-HJ-NP-Z2-9]{12}$/.test(code)) {
-      rowNumber = findRow_(sheet, 20, tracking) || findRow_(sheet, 20, code);
-    }
-    if (!rowNumber) throw new Error('Request not found. Check the ticket code on your receipt.');
+    var number = String(params.ticket || '').trim().toUpperCase();
+    var code = String(params.code || '').trim().toUpperCase();
+    if (!/^[PF]-\d{4,8}$/.test(number) || !/^[A-Z2-9]{8}$/.test(code)) throw new Error('Enter the ticket number and tracking code from the receipt.');
+    rowNumber = findRow_(sheet, 2, number);
+    if (!rowNumber) throw new Error('Ticket not found. Check the number on the receipt.');
+    if (String(sheet.getRange(rowNumber, 20).getDisplayValue()).toUpperCase() !== code) throw new Error('Ticket not found. Check the number and tracking code.');
   }
   if (!rowNumber) throw new Error('The ticket is still being saved.');
   var row = sheet.getRange(rowNumber, 1, 1, HEADERS.length).getValues()[0];
   var status = String(row[13] || '').toLowerCase();
   var position = activePosition_(sheet, rowNumber, String(row[2]), status);
-  var costEstimate = null;
-  try { costEstimate = estimateFromRow_(row); }
-  catch (_estimateError) { costEstimate = null; }
   return {
     ok: true,
     ticket: {
-      trackingNumber: publicTrackingNumber_(row[19]),
+      ticketNumber: String(row[1]),
+      trackingCode: String(row[19]),
       machineName: String(row[2]),
       status: status,
       position: position,
-      reason: String(row[30] || ''),
-      createdAt: row[16] instanceof Date ? row[16].toISOString() : String(row[16]),
-      costEstimate: costEstimate
+      reason: String(row[25] || ''),
+      createdAt: row[16] instanceof Date ? row[16].toISOString() : String(row[16])
     }
   };
 }
@@ -472,14 +225,13 @@ function validatePublicTicket_(input) {
     customerName: cleanText_(input.customerName, 'Name', 100, true),
     department: cleanText_(input.department, 'Department', 100, true),
     purpose: cleanText_(input.purpose, 'Purpose', 2000, true),
-    email: validateEmail_(input.email, 'Email'),
     phone: cleanText_(input.phone, 'Phone', 40, false),
     smsConsent: input.smsConsent === true || input.smsConsent === 'true' || input.smsConsent === 'on',
     notes: cleanText_(input.notes, 'Notes', 4000, false),
     quantity: positiveNumber_(input.quantity, 'Quantity', 10000, true),
     width: positiveNumber_(input.width, 'Width', machine === 'printer' ? 24 : 10000, false),
     length: positiveNumber_(input.length, 'Length', 100000, false),
-    neededBy: validateNeededBy_(input.neededBy),
+    neededBy: requiredArrayChoice_(input.neededBy, DEADLINES, 'Choose when the job is needed.'),
     paperType: '',
     thickness: '',
     files: validateFiles_(input.files || [])
@@ -489,7 +241,7 @@ function validatePublicTicket_(input) {
   } else {
     request.thickness = positiveNumber_(input.thickness, 'Foam thickness', 1000, false);
   }
-  request.phone = normalizePhone_(request.phone, request.smsConsent);
+  request.phone = normalizePhone(request.phone, request.smsConsent);
   return request;
 }
 
@@ -591,7 +343,7 @@ function beginUpload_(params) {
       payload: JSON.stringify({
         name: pendingName,
         parents: [folderId],
-        description: 'Pending Delaware Mandir workshop ticket upload',
+        description: 'Pending Mandir workshop ticket upload',
         appProperties: { mandirRequestKey: requestKey, mandirIndex: String(index) }
       }),
       headers: {
@@ -679,19 +431,14 @@ function inspectFile_(name, bytes) {
 function syncServerRow_(input, lock) {
   var properties = PropertiesService.getScriptProperties();
   var secret = properties.getProperty('SHARED_SECRET');
-  if (!secret || input.secret !== secret || [19, 20, 24].indexOf(input.row.length) === -1 || typeof input.row[0] !== 'string' || !Number.isInteger(input.row[18])) return jsonResponse_({ ok: false });
+  if (!secret || input.secret !== secret || input.row.length !== 19 || typeof input.row[0] !== 'string' || !Number.isInteger(input.row[18])) return jsonResponse_({ ok: false });
   lock.waitLock(20000);
   var sheet = ensureTicketSheet_(openBook_());
   var match = findRow_(sheet, 1, input.row[0]);
   if (match && Number(sheet.getRange(match, 19).getValue()) >= input.row[18]) return jsonResponse_({ ok: true });
   var target = match || sheet.getLastRow() + 1;
-  sheet.getRange(target, 1, 1, 19).setValues([input.row.slice(0, 19).map(escapeCell_)]);
+  sheet.getRange(target, 1, 1, 19).setValues([input.row.map(escapeCell_)]);
   sheet.getRange(target, 22).setValue('Node API');
-  if (input.row.length >= 20) sheet.getRange(target, 23).setValue(escapeCell_(input.row[19]));
-  if (input.row.length === 24) {
-    sheet.getRange(target, 20).setValue(escapeCell_(input.row[20]));
-    sheet.getRange(target, 25, 1, 3).setValues([input.row.slice(21, 24).map(escapeCell_)]);
-  }
   SpreadsheetApp.flush();
   return jsonResponse_({ ok: true });
 }
@@ -708,36 +455,6 @@ function ensureTicketSheet_(book) {
   if (sheet.getMaxColumns() < HEADERS.length) sheet.insertColumnsAfter(sheet.getMaxColumns(), HEADERS.length - sheet.getMaxColumns());
   var current = sheet.getRange(1, 1, 1, HEADERS.length).getDisplayValues()[0];
   for (var i = 0; i < HEADERS.length; i++) if (!current[i]) sheet.getRange(1, i + 1).setValue(HEADERS[i]);
-  return sheet;
-}
-
-function initializeNotificationStatusMarkers_(book) {
-  var sheet = ensureTicketSheet_(book);
-  if (sheet.getLastRow() < 2) return;
-  var count = sheet.getLastRow() - 1;
-  var statuses = sheet.getRange(2, 14, count, 1).getDisplayValues();
-  var markers = sheet.getRange(2, 24, count, 1).getDisplayValues();
-  var changed = false;
-  for (var i = 0; i < count; i++) {
-    if (!markers[i][0] && STATUSES.indexOf(String(statuses[i][0]).trim().toLowerCase()) !== -1) {
-      markers[i][0] = String(statuses[i][0]).trim().toLowerCase();
-      changed = true;
-    }
-  }
-  if (changed) sheet.getRange(2, 24, count, 1).setValues(markers);
-}
-
-function ensureNotificationSheet_(book) {
-  var sheet = book.getSheetByName(NOTIFICATION_SHEET) || book.insertSheet(NOTIFICATION_SHEET);
-  if (!sheet.getLastRow()) sheet.getRange(1, 1, 1, NOTIFICATION_HEADERS.length).setValues([NOTIFICATION_HEADERS]);
-  if (sheet.getMaxColumns() < NOTIFICATION_HEADERS.length) {
-    sheet.insertColumnsAfter(sheet.getMaxColumns(), NOTIFICATION_HEADERS.length - sheet.getMaxColumns());
-  }
-  var current = sheet.getRange(1, 1, 1, NOTIFICATION_HEADERS.length).getDisplayValues()[0];
-  for (var i = 0; i < NOTIFICATION_HEADERS.length; i++) {
-    if (!current[i]) sheet.getRange(1, i + 1).setValue(NOTIFICATION_HEADERS[i]);
-  }
-  if (!sheet.isSheetHidden()) sheet.hideSheet();
   return sheet;
 }
 
@@ -762,10 +479,8 @@ function activePosition_(sheet, rowNumber, machineName, status) {
   if (sheet.getLastRow() < 2) return null;
   var rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADERS.length).getValues();
   var target = String(rows[rowNumber - 2][0]);
-  var ordered = rows.map(staffTicket_).filter(function(ticket) {
-    return MACHINES[ticket.machine] === machineName && (ticket.status === 'queued' || ticket.status === 'in-progress');
-  }).sort(fifoCompare_);
-  var index = ordered.findIndex(function(ticket) { return ticket.id === target; });
+  var ordered = rows.map(staffTicket_).filter(function(t) { return MACHINES[t.machine] === machineName && (t.status === 'queued' || t.status === 'in-progress'); }).sort(fifoCompare);
+  var index = ordered.findIndex(function(t) { return t.id === target; });
   return index < 0 ? null : index + 1;
 }
 
@@ -783,343 +498,6 @@ function incrementDailyCount_(properties) {
   var record = String(properties.getProperty('DAILY_TICKET_COUNT') || '').split(':');
   var count = record[0] === key ? Number(record[1] || 0) : 0;
   properties.setProperty('DAILY_TICKET_COUNT', key + ':' + (count + 1));
-}
-
-function onTicketStatusEdit(event) {
-  if (!event || !event.range || event.range.getSheet().getName() !== TICKET_SHEET) return;
-  if (event.range.getColumn() !== 14 || event.range.getNumColumns() !== 1) return;
-  var sheet = event.range.getSheet();
-  var firstRow = event.range.getRow();
-  var rowCount = event.range.getNumRows();
-  if (firstRow + rowCount - 1 < 2) return;
-  var statuses = event.range.getDisplayValues();
-  var oldStatus = rowCount === 1 ? String(event.oldValue || '').trim().toLowerCase() : '';
-  var lock = LockService.getScriptLock();
-  var queued = false;
-  try { lock.waitLock(300000); }
-  catch (lockError) {
-    try { recordPendingStatusEdits_(sheet, firstRow, statuses); }
-    catch (recoveryError) { console.error('Could not record status notification recovery: ' + recoveryError.message); }
-    console.error('Status notification will be reconciled after lock timeout: ' + lockError.message);
-    return false;
-  }
-  try {
-    var book = openBook_();
-    for (var i = 0; i < rowCount; i++) {
-      var rowNumber = firstRow + i;
-      var status = String(statuses[i] && statuses[i][0] || '').trim().toLowerCase();
-      if (rowNumber < 2 || STATUSES.indexOf(status) === -1 || (rowCount === 1 && status === oldStatus)) continue;
-      var row = sheet.getRange(rowNumber, 1, 1, HEADERS.length).getValues()[0];
-      if (String(row[23] || '').trim().toLowerCase() === status) continue;
-      var updatedAt = new Date();
-      var revision = Math.max(1, Number(row[18]) || 1) + 1;
-      try {
-        if (notifyCustomerOfStatus_(row, status, revision, book, true)) queued = true;
-        sheet.getRange(rowNumber, 18).setValue(updatedAt);
-        sheet.getRange(rowNumber, 19).setValue(revision);
-        sheet.getRange(rowNumber, 24).setValue(status);
-      }
-      catch (notificationError) {
-        try { recordPendingStatusEdits_(sheet, rowNumber, [[status]]); }
-        catch (recoveryError) { console.error('Could not record status notification recovery: ' + recoveryError.message); }
-        console.error('Could not queue customer notification: ' + notificationError.message);
-      }
-    }
-  } finally {
-    if (lock.hasLock()) lock.releaseLock();
-  }
-  if (queued) {
-    try { retryTicketNotifications(); }
-    catch (notificationError) { console.error('Could not deliver queued notifications: ' + notificationError.message); }
-  }
-}
-
-function recordPendingStatusEdits_(sheet, firstRow, statuses) {
-  var properties = PropertiesService.getScriptProperties();
-  for (var i = 0; i < statuses.length; i++) {
-    var rowNumber = firstRow + i;
-    var status = String(statuses[i] && statuses[i][0] || '').trim().toLowerCase();
-    if (rowNumber < 2 || STATUSES.indexOf(status) === -1) continue;
-    var ticketId = String(sheet.getRange(rowNumber, 1).getDisplayValue() || '');
-    if (ticketId) properties.setProperty('PENDING_STATUS_NOTIFICATION_' + ticketId, JSON.stringify({ status: status }));
-  }
-}
-
-function notifyAdminsOfNewTicket_(request, ticketNumber, properties, book, deferFlush) {
-  var recipients = parseEmailList_(properties.getProperty('ADMIN_NOTIFICATION_EMAILS') || DEFAULT_ADMIN_NOTIFICATION_EMAIL);
-  if (!recipients.length) return false;
-  var reference = String(request.trackingNumber || ticketNumber);
-  var estimate = request.costEstimate;
-  if (!estimate) {
-    try { estimate = estimateTicketCost_(request); }
-    catch (_estimateError) { estimate = null; }
-  }
-  var subject = '[Delaware Mandir tickets] New ' + reference;
-  var body = [
-    'A new ' + (request.machine === 'printer' ? 'poster printing' : 'foam cutting') + ' ticket was submitted.',
-    '',
-    'Ticket code: ' + reference,
-    'Requester: ' + request.customerName,
-    'Department: ' + request.department,
-    'Needed by: ' + request.neededBy,
-    'Purpose: ' + request.purpose,
-    estimate ? '\n' + formatCostEstimate_(estimate) : ''
-  ].join('\n');
-  enqueueNotification_(book, {
-    id: 'new-ticket:' + request.requestKey,
-    to: recipients[0],
-    bcc: recipients.slice(1).join(','),
-    replyTo: request.email,
-    subject: subject,
-    body: body
-  });
-  if (!deferFlush) flushNotifications_(book);
-  return true;
-}
-
-function notifyCustomerOfStatus_(row, status, revision, book, deferFlush) {
-  var email = String(row[22] || '').trim().toLowerCase();
-  if (!email) return false;
-  email = validateEmail_(email, 'Customer email');
-  var labels = {
-    'pending-review': 'Awaiting review',
-    declined: 'Declined',
-    queued: 'Waiting',
-    'in-progress': 'Being made',
-    ready: 'Ready for pickup',
-    collected: 'Picked up',
-    cancelled: 'Cancelled'
-  };
-  var reference = row[19] ? publicTrackingNumber_(row[19]) : String(row[1]);
-  var label = labels[status] || status;
-  var estimate;
-  try { estimate = estimateFromRow_(row); }
-  catch (_estimateError) { estimate = null; }
-  var adminRecipients = parseEmailList_(PropertiesService.getScriptProperties().getProperty('ADMIN_NOTIFICATION_EMAILS') || DEFAULT_ADMIN_NOTIFICATION_EMAIL);
-  enqueueNotification_(book, {
-    id: 'status:' + String(row[0]) + ':' + String(revision) + ':' + status,
-    to: email,
-    replyTo: adminRecipients[0] || DEFAULT_ADMIN_NOTIFICATION_EMAIL,
-    subject: '[Delaware Mandir tickets] ' + reference + ' is ' + label.toLowerCase(),
-    body: [
-      'Your Delaware Mandir workshop request ' + reference + ' was updated.',
-      '',
-      'Current status: ' + label,
-      'Request: ' + String(row[2]),
-      estimate ? '\n' + formatCostEstimate_(estimate) : ''
-    ].join('\n')
-  });
-  if (!deferFlush) flushNotifications_(book);
-  return true;
-}
-
-function enqueueNotification_(book, notification) {
-  var sheet = ensureNotificationSheet_(book);
-  if (findRow_(sheet, 1, notification.id)) return false;
-  var createdAt = new Date();
-  sheet.getRange(sheet.getLastRow() + 1, 1, 1, NOTIFICATION_HEADERS.length).setValues([[
-    notification.id, notification.to, notification.bcc || '', notification.replyTo || '',
-    notification.subject, notification.body, createdAt, 0, '', createdAt, ''
-  ]]);
-  SpreadsheetApp.flush();
-  return true;
-}
-
-function flushNotifications_(book) {
-  var sheet = ensureNotificationSheet_(book);
-  if (sheet.getLastRow() < 2) return { sent: 0, pending: 0 };
-  var rowCount = sheet.getLastRow() - 1;
-  var rows = sheet.getRange(2, 1, rowCount, NOTIFICATION_HEADERS.length).getValues();
-  var now = new Date();
-  var sentRows = [];
-  var attempted = 0;
-  for (var i = 0; i < rows.length && attempted < 25; i++) {
-    var row = rows[i];
-    var nextAttempt = new Date(row[9]);
-    if (!row[0] || row[10] || (!isNaN(nextAttempt.getTime()) && nextAttempt > now)) continue;
-    attempted++;
-    var message = {
-      to: String(row[1]),
-      subject: String(row[4]),
-      body: String(row[5]),
-      name: 'Delaware Mandir Workshop Tickets'
-    };
-    if (row[2]) message.bcc = String(row[2]);
-    if (row[3]) message.replyTo = String(row[3]);
-    try {
-      MailApp.sendEmail(message);
-      sentRows.push(i + 2);
-    } catch (error) {
-      var attempts = Math.max(0, Number(row[7]) || 0) + 1;
-      var delay = Math.min(60 * 60 * 1000, 30 * 1000 * Math.pow(2, Math.min(attempts - 1, 7)));
-      sheet.getRange(i + 2, 8, 1, 3).setValues([[
-        attempts, String(error && error.message || 'Email delivery failed.').slice(0, 500), new Date(now.getTime() + delay)
-      ]]);
-      console.error('Notification delivery failed and will retry: ' + String(error && error.message || error));
-    }
-  }
-  sentRows.forEach(function(rowNumber) { sheet.getRange(rowNumber, 11).setValue(new Date()); });
-  SpreadsheetApp.flush();
-  var pending = rows.filter(function(row, index) {
-    return row[0] && !row[10] && sentRows.indexOf(index + 2) === -1;
-  }).length;
-  return { sent: sentRows.length, pending: pending };
-}
-
-function reconcileNotifications_(book) {
-  var properties = PropertiesService.getScriptProperties();
-  reconcilePendingStatusEdits_(book, properties);
-  var startedAt = new Date(properties.getProperty('NOTIFICATION_OUTBOX_STARTED_AT') || '');
-  if (isNaN(startedAt.getTime())) return 0;
-  var ticketSheet = ensureTicketSheet_(book);
-  if (ticketSheet.getLastRow() < 2) return 0;
-  var firstRow = Math.max(2, ticketSheet.getLastRow() - 499);
-  var tickets = ticketSheet.getRange(firstRow, 1, ticketSheet.getLastRow() - firstRow + 1, HEADERS.length).getValues();
-  var outbox = ensureNotificationSheet_(book);
-  var ids = {};
-  if (outbox.getLastRow() > 1) {
-    outbox.getRange(2, 1, outbox.getLastRow() - 1, 1).getDisplayValues().forEach(function(row) { ids[String(row[0])] = true; });
-  }
-  var queued = 0;
-  tickets.forEach(function(row, rowIndex) {
-    try {
-      if (String(row[21]) !== 'GitHub Pages' || new Date(row[16]) < startedAt) return;
-      var requestKey = String(row[20]);
-      var adminId = 'new-ticket:' + requestKey;
-      if (requestKey && !ids[adminId]) {
-        var request = {
-          requestKey: requestKey,
-          machine: String(row[2]) === MACHINES.printer ? 'printer' : 'foam',
-          customerName: String(row[3]),
-          department: String(row[4]),
-          purpose: String(row[5]),
-          neededBy: String(row[12]),
-          email: String(row[22]),
-          quantity: row[7],
-          paperType: String(row[8]),
-          width: row[9],
-          length: row[10],
-          thickness: row[11],
-          trackingNumber: row[19] ? publicTrackingNumber_(row[19]) : String(row[1])
-        };
-        try { request.costEstimate = estimateFromRow_(row); }
-        catch (_estimateError) { request.costEstimate = null; }
-        if (notifyAdminsOfNewTicket_(request, String(row[1]), properties, book, true)) {
-          ids[adminId] = true;
-          queued++;
-        }
-      }
-      var status = String(row[13]).trim().toLowerCase();
-      var revision = Math.max(1, Number(row[18]) || 1);
-      var statusId = 'status:' + String(row[0]) + ':' + String(revision) + ':' + status;
-      var lastNotifiedStatus = String(row[23] || '').trim().toLowerCase();
-      if (status !== lastNotifiedStatus && STATUSES.indexOf(status) !== -1) {
-        if (!ids[statusId]) {
-          var nextRevision = revision + 1;
-          if (notifyCustomerOfStatus_(row, status, nextRevision, book, true)) {
-            ids['status:' + String(row[0]) + ':' + String(nextRevision) + ':' + status] = true;
-            queued++;
-          }
-          ticketSheet.getRange(firstRow + rowIndex, 18).setValue(new Date());
-          ticketSheet.getRange(firstRow + rowIndex, 19).setValue(nextRevision);
-        }
-        ticketSheet.getRange(firstRow + rowIndex, 24).setValue(status);
-      }
-    } catch (error) {
-      console.error('Could not reconcile notifications for ticket ' + String(row[0] || row[1] || firstRow + rowIndex) + ': ' + String(error && error.message || error));
-    }
-  });
-  return queued;
-}
-
-function reconcilePendingStatusEdits_(book, properties) {
-  var pending = properties.getProperties();
-  var prefix = 'PENDING_STATUS_NOTIFICATION_';
-  var sheet = ensureTicketSheet_(book);
-  Object.keys(pending).filter(function(key) { return key.indexOf(prefix) === 0; }).forEach(function(key) {
-    var ticketId = key.slice(prefix.length);
-    try {
-      var rowNumber = findRow_(sheet, 1, ticketId);
-      if (!rowNumber) {
-        properties.deleteProperty(key);
-        return;
-      }
-      var row = sheet.getRange(rowNumber, 1, 1, HEADERS.length).getValues()[0];
-      var status = String(row[13] || '').trim().toLowerCase();
-      if (STATUSES.indexOf(status) === -1) return;
-      if (String(row[23] || '').trim().toLowerCase() === status) {
-        properties.deleteProperty(key);
-        return;
-      }
-      var currentRevision = Math.max(1, Number(row[18]) || 1);
-      var existingId = 'status:' + String(row[0]) + ':' + String(currentRevision) + ':' + status;
-      if (findRow_(ensureNotificationSheet_(book), 1, existingId)) {
-        sheet.getRange(rowNumber, 24).setValue(status);
-        properties.deleteProperty(key);
-        return;
-      }
-      var revision = currentRevision + 1;
-      notifyCustomerOfStatus_(row, status, revision, book, true);
-      var updatedAt = new Date();
-      sheet.getRange(rowNumber, 18).setValue(updatedAt);
-      sheet.getRange(rowNumber, 19).setValue(revision);
-      sheet.getRange(rowNumber, 24).setValue(status);
-      properties.deleteProperty(key);
-    } catch (error) {
-      console.error('Could not reconcile pending status notification for ticket ' + ticketId + ': ' + String(error && error.message || error));
-    }
-  });
-}
-
-function retryTicketNotifications() {
-  var lock = LockService.getScriptLock();
-  lock.waitLock(300000);
-  try {
-    var book = openBook_();
-    try { reconcileNotifications_(book); }
-    catch (reconcileError) { console.error('Could not reconcile notifications: ' + reconcileError.message); }
-    return flushNotifications_(book);
-  } finally {
-    if (lock.hasLock()) lock.releaseLock();
-  }
-}
-
-function validateEmail_(value, label) {
-  if (typeof value !== 'string') throw new Error(label + ' is invalid.');
-  var email = value.trim().toLowerCase();
-  var local = email.split('@')[0];
-  var pattern = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i;
-  if (!email || email.length > 254 || local.length > 64 || local.indexOf('.') === 0
-    || local.lastIndexOf('.') === local.length - 1 || local.indexOf('..') !== -1 || !pattern.test(email)) {
-    throw new Error('Enter a valid ' + label.toLowerCase() + '.');
-  }
-  return email;
-}
-
-function parseEmailList_(value) {
-  var seen = {};
-  return String(value || '').split(',').map(function(email) {
-    return email.trim() ? validateEmail_(email, 'Admin notification email') : '';
-  }).filter(function(email) {
-    if (!email || seen[email]) return false;
-    seen[email] = true;
-    return true;
-  });
-}
-
-function validateNeededBy_(value) {
-  if (DEADLINES.indexOf(value) !== -1) return value;
-  var text = String(value || '');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) throw new Error('Choose or enter a valid needed-by date.');
-  var parts = text.split('-').map(Number);
-  var date = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
-  if (parts[0] < 2000 || parts[0] > 2100 || date.getUTCFullYear() !== parts[0]
-    || date.getUTCMonth() !== parts[1] - 1 || date.getUTCDate() !== parts[2]) {
-    throw new Error('Choose or enter a valid needed-by date.');
-  }
-  var today = Utilities.formatDate(new Date(), DELAWARE_TIME_ZONE, 'yyyy-MM-dd');
-  if (text < today) throw new Error('Needed-by date cannot be in the past.');
-  return text;
 }
 
 function cleanText_(value, label, maxLength, required) {
@@ -1173,108 +551,85 @@ function javascriptResponse_(callback, value) {
 
 // Staff operations are server-to-server only. Keep WORKSHOP_SHARED_SECRET in
 // Script Properties and the private Node environment, never in the React build.
-function workshopFail_(message, status) {
-  var error = new Error(message);
-  error.status = status || 400;
-  throw error;
-}
-
-function fifoCompare_(a, b) {
-  return Date.parse(a.createdAt) - Date.parse(b.createdAt)
-    || (a.sequence || Number(String(a.ticketNumber || '').slice(2))) - (b.sequence || Number(String(b.ticketNumber || '').slice(2)))
-    || a.id.localeCompare(b.id);
-}
-
-function assertTransition_(ticket, status) {
+function workshopFail_(message, status) { var error = new Error(message); error.status = status || 400; throw error; }
+const fifoCompare = (a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || (a.sequence || Number(a.ticketNumber?.slice(2))) - (b.sequence || Number(b.ticketNumber?.slice(2))) || a.id.localeCompare(b.id);
+function assertTransition(tickets, ticket, status) {
   if (ticket.status === status) return;
-  var allowed = { queued: ['in-progress', 'cancelled'], 'in-progress': ['ready', 'cancelled'], ready: ['collected', 'cancelled'], collected: [], cancelled: [] };
-  if (!allowed[ticket.status] || allowed[ticket.status].indexOf(status) === -1) workshopFail_('Use the next workflow step for this ticket.', 409);
+  const allowed = { queued: ['in-progress', 'cancelled'], 'in-progress': ['ready', 'cancelled'], ready: ['collected', 'cancelled'], collected: [], cancelled: [] };
+  if (!allowed[ticket.status]?.includes(status)) workshopFail_('Use the next workflow step for this ticket.', 409);
   if (status === 'ready' && !(ticket.usage || []).length) workshopFail_('Record material used before marking this job ready.', 409);
 }
-
-function validateUsage_(ticket, input) {
+function validateUsage(ticket, input) {
   if (!input || typeof input !== 'object' || !/^[a-zA-Z0-9-]{16,100}$/.test(input.requestKey || '')) workshopFail_('Refresh the material form and try again.');
-  var used = Number(input.used);
-  var waste = Number(input.waste);
-  if (input.used === '' || input.used == null || input.waste === '' || input.waste == null || !Number.isFinite(used) || !Number.isFinite(waste)
-    || used < 0 || waste < 0 || used + waste <= 0 || used + waste > 100000) {
-    workshopFail_('Enter valid material quantities, including zero waste when there is none.');
-  }
-  var operator = typeof input.operator === 'string' ? input.operator.trim() : '';
-  var note = typeof input.note === 'string' ? input.note.trim() : '';
+  const used = Number(input.used), waste = Number(input.waste);
+  if (input.used === '' || input.used == null || input.waste === '' || input.waste == null || !Number.isFinite(used) || !Number.isFinite(waste) || used < 0 || waste < 0 || used + waste <= 0 || used + waste > 100000) workshopFail_('Enter valid material quantities, including zero waste when there is none.');
+  const operator = typeof input.operator === 'string' ? input.operator.trim() : '';
+  const note = typeof input.note === 'string' ? input.note.trim() : '';
   if (!operator || operator.length > 100 || !note || note.length > 500) workshopFail_('Add your name and a short usage note (up to 500 characters).');
-  return { requestKey: input.requestKey, used: used, waste: waste, operator: operator, note: note,
-    material: ticket.machine === 'printer' ? ticket.paperType : 'Foam ' + ticket.thickness + ' in',
-    unit: ticket.machine === 'printer' ? 'linear ft' : 'sq ft' };
+  return { requestKey: input.requestKey, used, waste, operator, note, material: ticket.machine === 'printer' ? ticket.paperType : `Foam ${ticket.thickness} in`, unit: ticket.machine === 'printer' ? 'linear ft' : 'sq ft' };
 }
-
-function normalizePhone_(phone, consent) {
+function normalizePhone(phone, consent) {
   if (!consent) return phone;
-  var number = String(phone || '').replace(/[\s().-]/g, '');
+  let number = phone.replace(/[\s().-]/g, '');
   if (/^\d{10}$/.test(number)) number = '+1' + number;
   if (/^1\d{10}$/.test(number)) number = '+' + number;
   if (!/^\+[1-9]\d{7,14}$/.test(number)) workshopFail_('Enter a valid mobile number with country code for text updates.');
   return number;
 }
-
-function notificationEvent_(ticket, status, reason) {
-  if (['ready', 'cancelled', 'declined'].indexOf(status) === -1 || !ticket.smsConsent) return {};
-  return { notification: { phone: ticket.phone, ticketNumber: ticket.ticketNumber, status: status, reason: reason || '' } };
+function notificationEvent(ticket, status, reason = '') {
+  if (!['ready', 'cancelled', 'declined'].includes(status) || !ticket.smsConsent) return {};
+  return { notification: { phone: ticket.phone, ticketNumber: ticket.ticketNumber, status, reason } };
 }
-
-function validateReview_(ticket, input) {
-  if (!input || ['save', 'approve', 'decline'].indexOf(input.decision) === -1) workshopFail_('Choose a review action.');
+// Review edits are explicit: no client-controlled identifiers, timestamps, or stored paths.
+function validateReview(ticket, input) {
+  if (!input || !['save', 'approve', 'decline'].includes(input.decision)) workshopFail_('Choose a review action.');
   if (ticket.status !== 'pending-review') workshopFail_('Only requests awaiting review can be edited.', 409);
-  var fields = input.fields || {};
-  function stringField(key, max, required) {
-    var value = fields[key] === undefined ? ticket[key] || '' : fields[key];
-    if (typeof value !== 'string' || value.length > max || (required && !value.trim())) workshopFail_('Check ' + key + '.');
-    return value.trim();
-  }
-  function numberField(key, max) {
-    var raw = fields[key] === undefined ? ticket[key] : fields[key];
-    if (['number', 'string'].indexOf(typeof raw) === -1 || !/^(?:\d+\.?\d*|\.\d+)$/.test(String(raw).trim())) workshopFail_('Check ' + key + '.');
-    var value = Number(raw);
-    if (!Number.isFinite(value) || value < 0.01 || value > max) workshopFail_('Check ' + key + '.');
-    return value;
-  }
-  var machine = stringField('machine', 10, true);
-  if (['printer', 'foam'].indexOf(machine) === -1) workshopFail_('Choose a machine.');
-  var neededBy = stringField('neededBy', 30, true);
-  if (DEADLINES.indexOf(neededBy) === -1 && !/^\d{4}-\d{2}-\d{2}$/.test(neededBy)) workshopFail_('Choose a requested deadline.');
-  var quantity = numberField('quantity', 10000);
-  if (!Number.isInteger(quantity)) workshopFail_('Quantity must be a whole number.');
-  var paperType = machine === 'printer' ? stringField('paperType', 50, false) : '';
-  if (paperType && PAPER_TYPES.indexOf(paperType) === -1) workshopFail_('Choose a paper material.');
+  const fields = input.fields || {};
+  const str = (key, max, required = false) => {
+    const v = fields[key] === undefined ? ticket[key] || '' : fields[key];
+    if (typeof v !== 'string' || v.length > max || (required && !v.trim())) workshopFail_('Check ' + key + '.');
+    return v.trim();
+  };
+  const num = (key, max) => {
+    const raw = fields[key] === undefined ? ticket[key] : fields[key];
+    if (!['number','string'].includes(typeof raw) || !/^(?:\d+\.?\d*|\.\d+)$/.test(String(raw).trim())) workshopFail_('Check ' + key + '.');
+    const v = Number(raw); if (!Number.isFinite(v) || v < .01 || v > max) workshopFail_('Check ' + key + '.'); return v;
+  };
+  const machine = str('machine', 10, true);
+  if (!['printer','foam'].includes(machine)) workshopFail_('Choose a machine.');
+  const neededBy = str('neededBy', 30, true);
+  if (!['Today','Tomorrow','This week','No rush'].includes(neededBy)) workshopFail_('Choose a requested deadline.');
+  const quantity = num('quantity',10000); if (!Number.isInteger(quantity)) workshopFail_('Quantity must be a whole number.');
+  const paperType = machine === 'printer' ? str('paperType',50) : '';
+  if (paperType && !['Polypropylene','Adhesive','Canvas','Glossy','Standard'].includes(paperType)) workshopFail_('Choose a paper material.');
   if (input.decision === 'approve' && machine === 'printer' && !paperType) workshopFail_('Choose a paper material before approval.');
-  var files = fields.files === undefined ? ticket.files : fields.files;
+  let files = fields.files === undefined ? ticket.files : fields.files;
   if (!Array.isArray(files) || files.length > 10) workshopFail_('Attach up to ten artwork files.');
-  files = files.map(function(file) {
-    if (!file || typeof file.originalName !== 'string' || !file.originalName.trim() || file.originalName.length > 180 || /[\r\n]/.test(file.originalName)) workshopFail_('Check the artwork filename.');
-    if (file.url && /^https:\/\/drive\.google\.com\/file\/d\/[A-Za-z0-9_-]+\/view$/.test(file.url)) return { originalName: file.originalName.trim(), url: file.url };
-    workshopFail_('Use a Google Drive file link ending in /view.');
+  files = files.map(f => {
+    if (!f || typeof f.originalName !== 'string' || !f.originalName.trim() || f.originalName.length > 180 || /[\r\n]/.test(f.originalName)) workshopFail_('Check the artwork filename.');
+    if (f.storedName) {
+      const original = ticket.files.find(old => old.storedName === f.storedName);
+      if (!original) workshopFail_('This stored file does not belong to the ticket.');
+      return { ...original, originalName: f.originalName.trim() };
+    }
+    if (typeof f.url !== 'string' || !/^https:\/\/drive\.google\.com\/file\/d\/[A-Za-z0-9_-]+\/view$/.test(f.url)) workshopFail_('Use a Google Drive file link ending in /view.');
+    return { originalName: f.originalName.trim(), url: f.url };
   });
   if (input.decision === 'approve' && machine === 'printer' && !files.length) workshopFail_('Attach artwork before approving a print.');
-  var reason = typeof input.reason === 'string' ? input.reason.trim() : '';
+  const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
   if (reason.length > 1000 || (input.decision === 'decline' && !reason)) workshopFail_('Give a decline reason (up to 1000 characters).');
-  var operator = typeof input.operator === 'string' ? input.operator.trim() : '';
+  const operator = typeof input.operator === 'string' ? input.operator.trim() : '';
   if (!operator || operator.length > 100) workshopFail_('Enter the reviewing admin name.');
-  var phone = normalizePhone_(stringField('phone', 40, false), ticket.smsConsent === true);
-  var edits = { machine: machine, neededBy: neededBy, quantity: quantity, paperType: paperType, files: files, phone: phone,
-    customerName: stringField('customerName', 100, true), department: stringField('department', 100, true),
-    purpose: stringField('purpose', 2000, true), notes: stringField('notes', 4000, false),
-    width: numberField('width', machine === 'printer' ? 24 : 10000), length: numberField('length', 100000),
-    thickness: machine === 'foam' ? numberField('thickness', 1000) : 0 };
-  var changes = Object.keys(edits).filter(function(key) { return JSON.stringify(ticket[key]) !== JSON.stringify(edits[key]); })
-    .map(function(key) { return { field: key, before: ticket[key] == null ? null : ticket[key], after: edits[key] }; });
-  return { edits: edits, changes: changes, reason: reason, operator: operator,
-    status: input.decision === 'approve' ? 'queued' : input.decision === 'decline' ? 'declined' : 'pending-review' };
+  const phone = normalizePhone(str('phone',40), ticket.smsConsent === true);
+  const edits = { machine, neededBy, quantity, paperType, files, phone, customerName: str('customerName',100,true), department: str('department',100,true), purpose: str('purpose',2000,true), notes: str('notes',4000), width: num('width',machine === 'printer' ? 24 : 10000), length:num('length',100000), thickness:machine === 'foam' ? num('thickness',1000) : 0 };
+  const changes = Object.keys(edits).filter(k => JSON.stringify(ticket[k]) !== JSON.stringify(edits[k])).map(k => ({ field:k, before:ticket[k] ?? null, after:edits[k] }));
+  return { edits, changes, reason, operator, status: input.decision === 'approve' ? 'queued' : input.decision === 'decline' ? 'declined' : 'pending-review' };
 }
 
 function staffTicket_(row) {
   var machine = Object.keys(MACHINES).find(function(id) { return MACHINES[id] === String(row[2]) || id === String(row[2]); });
-  function date(value) { return value instanceof Date ? value.toISOString() : String(value || ''); }
-  function parsed(value) { if (!value) return []; var result = JSON.parse(String(value)); if (!Array.isArray(result)) throw new Error('Invalid staff record.'); return result; }
+  var date = function(v) { return v instanceof Date ? v.toISOString() : String(v || ''); };
+  var parsed = function(v) { if (!v) return []; var result = JSON.parse(String(v)); if (!Array.isArray(result)) throw new Error('Invalid staff record.'); return result; };
   return { id: String(row[0]), ticketNumber: String(row[1]), sequence: Number(String(row[1]).slice(2)), machine: machine,
     customerName: String(row[3]), department: String(row[4]), purpose: String(row[5]), phone: String(row[6] || '').replace(/^'(?=\+)/, ''),
     quantity: Number(row[7]), paperType: String(row[8] || ''), width: Number(row[9]), length: Number(row[10]), thickness: Number(row[11]), neededBy: String(row[12]),
@@ -1282,116 +637,92 @@ function staffTicket_(row) {
     files: String(row[15] || '').split('\n').filter(Boolean).map(function(entry) {
       var match = /https:\/\/drive\.google\.com\/file\/d\/([A-Za-z0-9_-]+)/.exec(entry);
       return match ? { originalName: entry.slice(0, entry.indexOf(match[0])).replace(/[\s—:|-]+$/, '') || 'Artwork', url: 'https://drive.google.com/file/d/' + match[1] + '/view' } : null;
-    }).filter(Boolean),
-    createdAt: date(row[16]), updatedAt: date(row[17]), revision: Number(row[18]) || 1,
-    usage: parsed(row[27]), history: parsed(row[28]), smsConsent: row[29] === 'yes', reason: String(row[30] || '') };
+    }).filter(Boolean), createdAt: date(row[16]), updatedAt: date(row[17]), revision: Number(row[18]) || 1,
+    usage: parsed(row[22]), history: parsed(row[23]), smsConsent: row[24] === 'yes', reason: String(row[25] || '') };
 }
-
-function workshopRows_(sheet) {
-  return sheet.getLastRow() < 2 ? [] : sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADERS.length).getValues();
-}
-
+function workshopRows_(sheet) { return sheet.getLastRow() < 2 ? [] : sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADERS.length).getValues(); }
 function publicWorkshopQueue_() {
-  var tickets = workshopRows_(ensureTicketSheet_(openBook_())).map(staffTicket_).sort(fifoCompare_);
+  var tickets = workshopRows_(ensureTicketSheet_(openBook_())).map(staffTicket_).sort(fifoCompare);
   return { ok: true, updatedAt: new Date().toISOString(), machines: Object.keys(MACHINES).map(function(id) {
-    var activeTickets = tickets.filter(function(ticket) { return ticket.machine === id && (ticket.status === 'queued' || ticket.status === 'in-progress'); });
-    var visible = tickets.filter(function(ticket) { return ticket.machine === id && ['pending-review', 'queued', 'in-progress'].indexOf(ticket.status) !== -1; });
-    return { id: id, name: MACHINES[id], waiting: activeTickets.length,
-      inReview: visible.filter(function(ticket) { return ticket.status === 'pending-review'; }).length,
-      tickets: visible.map(function(ticket) { return { ticketNumber: ticket.ticketNumber, status: ticket.status,
-        position: ticket.status === 'pending-review' ? null : activeTickets.findIndex(function(active) { return active.id === ticket.id; }) + 1 }; }) };
+    var active = tickets.filter(function(t) { return t.machine === id && (t.status === 'queued' || t.status === 'in-progress'); });
+    var visible = tickets.filter(function(t) { return t.machine === id && ['pending-review','queued','in-progress'].includes(t.status); });
+    return { id: id, name: MACHINES[id], waiting: active.length, inReview: visible.filter(t => t.status === 'pending-review').length, tickets: visible.map(function(t) { return { ticketNumber: t.ticketNumber, customerName: t.customerName || '', status: t.status, position: t.status === 'pending-review' ? null : active.findIndex(a => a.id === t.id) + 1 }; }) };
   }) };
 }
-
 function staffAction_(input, lock) {
   try {
     var secret = PropertiesService.getScriptProperties().getProperty('WORKSHOP_SHARED_SECRET');
     if (!secret || secret.length < 32 || input.secret !== secret) workshopFail_('Staff connection is not authorized.', 401);
     lock.waitLock(20000);
-    var book = openBook_();
-    var sheet = ensureTicketSheet_(book);
+    var sheet = ensureTicketSheet_(openBook_());
     var rows = workshopRows_(sheet);
     var tickets = rows.map(staffTicket_);
     if (input.action === 'staffList') return jsonResponse_({ ok: true, tickets: tickets });
-    var index = tickets.findIndex(function(ticket) { return ticket.id === input.id; });
+    var index = tickets.findIndex(function(t) { return t.id === input.id; });
     if (index < 0) workshopFail_('Ticket not found.', 404);
     var ticket = tickets[index];
     if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) workshopFail_('Refresh the ticket first.');
-    var previousStatus = ticket.status;
     var now = new Date().toISOString();
     if (input.action === 'adminReview') {
-      if (ticket.revision !== input.expectedRevision) workshopFail_('This request changed. Refresh before reviewing.', 409);
-      var review = validateReview_(ticket, input.input);
-      Object.assign(ticket, review.edits, { status: review.status, reason: review.reason });
-      ticket.history.push(Object.assign({ status: ticket.status, at: now, operator: review.operator, reason: review.reason, changes: review.changes }, notificationEvent_(ticket, ticket.status, review.reason)));
+      if (ticket.revision !== input.expectedRevision) workshopFail_('This request changed. Refresh before reviewing.',409);
+      var result = validateReview(ticket,input.input);
+      Object.assign(ticket,result.edits,{status:result.status,reason:result.reason});
+      ticket.history.push({status:ticket.status,at:now,operator:result.operator,reason:result.reason,changes:result.changes,...notificationEvent(ticket,ticket.status,result.reason)});
     } else if (input.action === 'staffUsage') {
-      var entry = validateUsage_(ticket, input.input);
-      var prior = ticket.usage.find(function(item) { return item.requestKey === entry.requestKey; });
+      var entry = validateUsage(ticket, input.input);
+      var prior = ticket.usage.find(function(u) { return u.requestKey === entry.requestKey; });
       if (prior) {
-        if (Object.keys(entry).some(function(key) { return entry[key] !== prior[key]; })) workshopFail_('Usage was already recorded with different values.', 409);
+        if (Object.keys(entry).some(function(k) { return entry[k] !== prior[k]; })) workshopFail_('Usage was already recorded with different values.', 409);
         return jsonResponse_({ ok: true, ticket: ticket });
       }
       if (ticket.revision !== input.expectedRevision) workshopFail_('This ticket changed. Refresh and try again.', 409);
-      if (['in-progress', 'ready'].indexOf(ticket.status) === -1) workshopFail_('Start the job before recording material usage.', 409);
-      entry.at = now;
-      ticket.usage.push(entry);
+      if (['in-progress', 'ready'].indexOf(ticket.status) < 0) workshopFail_('Start the job before recording material usage.', 409);
+      entry.at = now; ticket.usage.push(entry);
     } else {
       if (ticket.revision !== input.expectedRevision) workshopFail_('This ticket changed. Refresh and try again.', 409);
-      assertTransition_(ticket, input.status);
+      assertTransition(tickets, ticket, input.status);
       if (ticket.status === input.status) return jsonResponse_({ ok: true, ticket: ticket });
       if (typeof input.reason !== 'undefined' && typeof input.reason !== 'string') workshopFail_('Check the reason.');
       var reason = (input.reason || '').trim();
       if (reason.length > 1000 || (input.status === 'cancelled' && !reason)) workshopFail_('Give a cancellation reason (up to 1000 characters).');
-      ticket.status = input.status;
-      ticket.reason = reason;
-      ticket.history.push(Object.assign({ status: ticket.status, at: now, reason: ticket.reason }, notificationEvent_(ticket, ticket.status, ticket.reason)));
+      ticket.status = input.status; ticket.reason = reason;
+      ticket.history.push({ status: ticket.status, at: now, reason: ticket.reason, ...notificationEvent(ticket,ticket.status,ticket.reason) });
     }
-    ticket.revision++;
-    ticket.updatedAt = now;
+    ticket.revision++; ticket.updatedAt = now;
+    // One row write commits status, revision, usage and history together.
     var row = rows[index];
     if (input.action === 'adminReview') {
       row[2] = MACHINES[ticket.machine]; row[3] = ticket.customerName; row[4] = ticket.department; row[5] = ticket.purpose; row[6] = ticket.phone;
       row[7] = ticket.quantity; row[8] = ticket.paperType; row[9] = ticket.width; row[10] = ticket.length; row[11] = ticket.thickness;
-      row[12] = ticket.neededBy; row[14] = ticket.notes; row[15] = ticket.files.map(function(file) { return file.originalName + ' — ' + file.url; }).join('\n');
-      try {
-        var estimate = estimateTicketCost_(ticket);
-        row[24] = estimate.amountCents / 100; row[25] = estimate.basis; row[26] = estimate.version;
-      } catch (_estimateError) { row[24] = ''; row[25] = ''; row[26] = ''; }
+      row[12] = ticket.neededBy; row[14] = ticket.notes; row[15] = ticket.files.map(f => f.originalName + ' — ' + f.url).join('\n');
     }
+    row[24] = ticket.smsConsent ? 'yes' : ''; row[25] = ticket.reason || '';
     row[13] = ticket.status; row[17] = now; row[18] = ticket.revision;
-    row[27] = JSON.stringify(ticket.usage); row[28] = JSON.stringify(ticket.history);
-    row[29] = ticket.smsConsent ? 'yes' : ''; row[30] = ticket.reason || '';
-    if (row[27].length > 45000 || row[28].length > 45000) workshopFail_('This ticket has reached its history limit. Contact the coordinator.');
-    if (previousStatus !== ticket.status) {
-      try { notifyCustomerOfStatus_(row, ticket.status, ticket.revision, book, true); row[23] = ticket.status; }
-      catch (notificationError) { console.error('Could not queue customer notification: ' + notificationError.message); }
-    }
+    row[22] = JSON.stringify(ticket.usage); row[23] = JSON.stringify(ticket.history);
+    if (row[22].length > 45000 || row[23].length > 45000) workshopFail_('This ticket has reached its history limit. Contact the coordinator.');
     sheet.getRange(index + 2, 1, 1, HEADERS.length).setValues([row.map(escapeCell_)]);
     SpreadsheetApp.flush();
     return jsonResponse_({ ok: true, ticket: ticket });
   } catch (error) {
-    return jsonResponse_({ ok: false, status: error.status || 503,
-      error: error.status ? error.message : 'Google Sheets could not complete this operation. Refresh and retry.' });
+    return jsonResponse_({ ok: false, status: error.status || 503, error: error.status ? error.message : 'Google Sheets could not complete this operation. Refresh and retry.' });
   }
 }
 
 // Run once during rollout if pre-existing queued requests have not been reviewed.
+// Active/ready/closed work and recorded material usage are retained.
 function holdUnreviewedQueueForAdminReview() {
-  var lock = LockService.getScriptLock();
-  lock.waitLock(20000);
+  var lock = LockService.getScriptLock(); lock.waitLock(20000);
   try {
     var sheet = ensureTicketSheet_(openBook_());
-    workshopRows_(sheet).forEach(function(row, index) {
+    workshopRows_(sheet).forEach(function(row,index) {
       var ticket = staffTicket_(row);
-      var approved = ticket.history.some(function(history) { return history.status === 'queued' && history.operator && Array.isArray(history.changes); });
+      var approved = ticket.history.some(function(h) { return h.status === 'queued' && h.operator && Array.isArray(h.changes); });
       if (ticket.status !== 'queued' || approved) return;
       var now = new Date().toISOString();
-      ticket.history.push({ status: 'pending-review', at: now, reason: 'Existing unstarted request moved to admin review during rollout.' });
-      row[13] = 'pending-review'; row[17] = now; row[18] = ticket.revision + 1; row[28] = JSON.stringify(ticket.history);
-      sheet.getRange(index + 2, 1, 1, HEADERS.length).setValues([row.map(escapeCell_)]);
+      ticket.history.push({status:'pending-review',at:now,reason:'Existing unstarted request moved to admin review during rollout.'});
+      row[13] = 'pending-review'; row[17] = now; row[18] = ticket.revision + 1; row[23] = JSON.stringify(ticket.history);
+      sheet.getRange(index + 2,1,1,HEADERS.length).setValues([row.map(escapeCell_)]);
     });
     SpreadsheetApp.flush();
-  } finally {
-    if (lock.hasLock()) lock.releaseLock();
-  }
+  } finally { lock.releaseLock(); }
 }

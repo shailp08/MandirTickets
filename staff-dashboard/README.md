@@ -4,7 +4,7 @@ Authenticated staff interface for the MandirTickets backend. Printing and foam-c
 
 ## Build and serve
 
-Use Node 22+. From the repository root install this app with `npm ci --prefix PrintingDashboard`, run `npm run build:staff`, then start the root server. The dashboard is served at `/staff/`, alongside its authenticated API.
+Use Node 22+. Install dependencies with `npm ci`. From the parent `MandirTickets` folder run `npm run build:staff`, then start that server. The dashboard is served at `/staff/`, alongside its authenticated API.
 
 See `../docs/workshop-setup.md` for the complete online rollout. GitHub Pages alone cannot host the private staff server. No secrets belong in `REACT_APP_` variables. The new default interface never silently switches to mock tickets.
 

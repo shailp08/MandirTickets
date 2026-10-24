@@ -1,4 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
+import {
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  ClockCounterClockwise,
+  FileArrowUp,
+  MagnifyingGlass,
+  Printer,
+  Scissors,
+  UploadSimple,
+  X,
+} from '@phosphor-icons/react';
 import QueueBoard from './QueueBoard.jsx';
 import { createSheetsTicket, trackSheetsTicket, validateSheetsFiles } from './sheets-api.js';
 
@@ -17,9 +29,7 @@ const SHEETS_API_URL = (import.meta.env.VITE_GOOGLE_SCRIPT_URL || '').replace(/\
 const apiUrl = path => `${API_BASE_URL}${path}`;
 const staticPreview = location.hostname.endsWith('.github.io') && !API_BASE_URL && !SHEETS_API_URL;
 
-const STATUS_LABELS = {
-  'pending-review': 'Awaiting review',
-  declined: 'Declined',
+const STATUS_LABELS = { 'pending-review': 'In Review', declined: 'Declined',
   queued: 'Waiting',
   'in-progress': 'Being made',
   ready: 'Ready for pickup',
@@ -50,53 +60,32 @@ const createRequestKey = () => Array.from(
 function Header() {
   return (
     <header className="site-header">
-      <a className="brand" data-nav-entry href={location.pathname} aria-label="Delaware Mandir workshop ticket home">
-        <strong>Delaware Mandir</strong>
-        <span>Workshop tickets</span>
+      <a className="brand" href={location.pathname} aria-label="Mandir workshop ticket home">
+        <span className="brand-mark" aria-hidden="true">M</span>
+        <span><strong>Mandir</strong><small>Workshop tickets</small></span>
       </a>
-      <nav className="header-links">
-        <a className="header-note" data-nav-entry href="#queue">View queue</a>
-        <a className="header-note" data-nav-entry href="#tracker">Track a ticket</a>
-      </nav>
+      <nav className="header-links"><a className="header-note" href="#queue">View queue</a><a className="header-note" href="#tracker"><MagnifyingGlass aria-hidden="true" /> Track a ticket</a></nav>
     </header>
-  );
-}
-
-function CostEstimate({ estimate }) {
-  if (!estimate) return null;
-  return (
-    <div className="cost-estimate">
-      <small>Approximate material cost</small>
-      <strong>{estimate.amountDisplay}</strong>
-      <p>{estimate.basis}</p>
-      <p>{estimate.disclaimer}</p>
-    </div>
   );
 }
 
 function MachineChoice({ value, onChange }) {
   return (
     <section className="machine-step" aria-labelledby="ticket-question">
-      <div className="hero-copy">
-        <h1 id="ticket-question" data-rise style={{ '--i': 0 }} tabIndex="-1">Choose what you need</h1>
-        <p className="intro" data-rise style={{ '--i': 1 }}>Start a request for poster printing or foam cutting. We’ll only show the questions for that job.</p>
-        <p className="hero-detail" data-rise style={{ '--i': 2 }}>After you submit, you’ll get one ticket code to save.</p>
-      </div>
-      <div className="machine-stage">
-        <div className="machine-panel" data-ticket-open>
-          <h2>Pick one service</h2>
-          <div className="machine-choices" role="group" aria-label="Choose a ticket type">
-            <button className={value === 'printer' ? 'machine-choice selected' : 'machine-choice'} data-choice type="button" aria-labelledby="poster-printing-title" aria-describedby="poster-printing-description" onClick={() => onChange('printer')}>
-              <span className="choice-copy"><strong id="poster-printing-title">Poster printing</strong><small id="poster-printing-description">Posters, signs, stickers, and canvas up to 24 inches wide</small></span>
-              <span className="choice-select" aria-hidden="true">Choose</span>
-            </button>
-            <button className={value === 'foam' ? 'machine-choice selected' : 'machine-choice'} data-choice type="button" aria-labelledby="foam-cutting-title" aria-describedby="foam-cutting-description" onClick={() => onChange('foam')}>
-              <span className="choice-copy"><strong id="foam-cutting-title">Foam cutting</strong><small id="foam-cutting-description">Foam letters, shapes, signs, and display pieces</small></span>
-              <span className="choice-select" aria-hidden="true">Choose</span>
-            </button>
-          </div>
-          <p className="help-note">Not sure which one to choose? Ask a workshop volunteer for help.</p>
-        </div>
+      <p className="eyebrow">Open a workshop ticket</p>
+      <h1 id="ticket-question" tabIndex="-1">What are you opening a ticket for?</h1>
+      <p className="intro">Choose what you need. We will only show the questions for that type of job.</p>
+      <div className="machine-choices" role="group" aria-label="Choose a ticket type">
+        <button className={value === 'printer' ? 'machine-choice selected' : 'machine-choice'} type="button" aria-labelledby="poster-printing-title" aria-describedby="poster-printing-description" onClick={() => onChange('printer')}>
+          <span className="choice-icon"><Printer size={34} weight="duotone" aria-hidden="true" /></span>
+          <span className="choice-copy"><strong id="poster-printing-title">Poster printing</strong><small id="poster-printing-description">Posters, signs, stickers, and canvas up to 24 inches wide</small></span>
+          <span className="choice-select" aria-hidden="true">Select <ArrowRight weight="bold" /></span>
+        </button>
+        <button className={value === 'foam' ? 'machine-choice selected' : 'machine-choice'} type="button" aria-labelledby="foam-cutting-title" aria-describedby="foam-cutting-description" onClick={() => onChange('foam')}>
+          <span className="choice-icon"><Scissors size={34} weight="duotone" aria-hidden="true" /></span>
+          <span className="choice-copy"><strong id="foam-cutting-title">Foam cutting</strong><small id="foam-cutting-description">Foam letters, shapes, signs, and display pieces</small></span>
+          <span className="choice-select" aria-hidden="true">Select <ArrowRight weight="bold" /></span>
+        </button>
       </div>
     </section>
   );
@@ -215,17 +204,18 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
   if (ticket) {
     return (
       <section className="receipt-card" id="ticket-receipt" tabIndex="-1" aria-labelledby="receipt-title">
-        <h2 id="receipt-title">Ticket submitted</h2>
-        <p>Your request is awaiting an admin review before it enters the production queue.</p>
-        <p className="receipt-label">Ticket code</p>
-        <strong className="receipt-number receipt-code">{ticket.trackingNumber || ticket.trackingCode || ticket.ticketNumber}</strong>
-        <p>{machineName(ticket)} · {ticket.department}{ticket.position ? ` · Number in line ${ticket.position}` : ''}</p>
-        <CostEstimate estimate={ticket.costEstimate} />
-        <p className="receipt-help"><strong>Write down or print this code.</strong> You will need it to check the review, follow progress, and collect the finished job.</p>
+        <span className="receipt-check"><Check size={25} weight="bold" aria-hidden="true" /></span>
+        <p className="eyebrow">Ticket submitted</p>
+        <h2 id="receipt-title">Your request is awaiting review.</h2>
+        <p className="receipt-label">Ticket number</p>
+        <strong className="receipt-number">{ticket.ticketNumber}</strong>
+        {ticket.trackingCode && <><p className="receipt-label">Tracking code</p><strong className="tracking-code">{ticket.trackingCode}</strong></>}
+        <p>{machineName(ticket)} · {ticket.department}{ticket.position ? ` · ${ticket.position - 1} ${ticket.position === 2 ? 'job' : 'jobs'} ahead of you` : ''}</p>
+        <p className="receipt-help">An admin will check your files and dimensions before your request joins the staff queue. Save the ticket number{ticket.trackingCode ? ' and tracking code' : ''}. You will need them to check progress or collect the finished job.</p>
         <div className="receipt-actions">
-          <button className="button button-secondary" type="button" onClick={() => window.print()}>Print this page</button>
-          <a className="button button-secondary" href="#tracker">Track this ticket</a>
-          <button className="button button-primary" type="button" onClick={startAnother}>Open another ticket</button>
+          <button className="button button-secondary" type="button" onClick={() => window.print()}><Printer aria-hidden="true" /> Print receipt</button>
+          <a className="button button-secondary" href="#tracker"><MagnifyingGlass aria-hidden="true" /> Track ticket</a>
+          <button className="button button-primary" type="button" onClick={startAnother}>Open another ticket <ArrowRight aria-hidden="true" /></button>
         </div>
       </section>
     );
@@ -234,60 +224,61 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
   return (
     <section className="form-section" aria-labelledby="form-title">
       <div className="form-heading">
-        <button className="change-machine" type="button" onClick={() => { onChangeMachine(null); focusSection('ticket-question'); }}>Change request type</button>
-        <p className="selected-machine">Request type: <strong>{MACHINES[machine]}</strong></p>
-        <h1 id="form-title" tabIndex="-1">Tell us about your job</h1>
-        <p>Fill in the form below. Fields marked “Required” must be completed.</p>
+        <button className="change-machine" type="button" onClick={() => { onChangeMachine(null); focusSection('ticket-question'); }}><ArrowLeft aria-hidden="true" /> Change request type</button>
+        <span className="selected-machine">{machine === 'printer' ? <Printer aria-hidden="true" /> : <Scissors aria-hidden="true" />}{MACHINES[machine]}</span>
+        <h2 id="form-title" tabIndex="-1">Tell us about the job.</h2>
+        <p>Required fields are marked. Send one ticket for each item or design.</p>
       </div>
 
       <form ref={formRef} onSubmit={submit} aria-busy={submitting}>
         <input type="hidden" name="machine" value={machine} />
 
         <fieldset className="form-card">
-          <legend>Your information</legend>
+          <legend>Contact and purpose</legend>
           <div className="field-grid">
-            <label>Your name <span>Required</span><input name="customerName" autoComplete="name" required maxLength="100" /></label>
-            <label>Department or group <span>Required</span><input name="department" required maxLength="100" placeholder="Example: Events or Youth" /></label>
-            <label>Email address <span>Required</span><input name="email" type="email" autoComplete="email" required maxLength="254" placeholder="name@example.com" /></label>
-            <label>Phone number <span>Optional</span><input name="phone" type="tel" autoComplete="tel" maxLength="40" /></label>
-            <label className="field-full sms-consent"><input type="checkbox" name="smsConsent" value="true" /> Text me when this request is ready, declined, or cancelled. Message and data rates may apply.</label>
-            <label className="field-full">What is this for? <span>Required</span><textarea name="purpose" required maxLength="2000" rows="4" placeholder="Example: A welcome sign for the Diwali event" /></label>
-            <label>When is it needed? <span>Required</span><select name="neededBy" defaultValue="No rush" required><option>Today</option><option>Tomorrow</option><option>This week</option><option>No rush</option></select><small className="input-help">Choose the closest deadline; an admin will confirm timing.</small></label>
+            <label>Name <span>Required</span><input name="customerName" autoComplete="name" required maxLength="100" placeholder="Your name" /></label>
+            <label>Department <span>Required</span><input name="department" required maxLength="100" placeholder="Decorations, Events, Youth" /></label>
+            <label className="field-full">What is this for? <span>Required</span><textarea name="purpose" required maxLength="2000" rows="4" placeholder="Describe the event, project, and how the finished piece will be used." /></label>
+            <label>Needed by <span>Required</span><select name="neededBy" required defaultValue="No rush"><option>Today</option><option>Tomorrow</option><option>This week</option><option>No rush</option></select></label>
+            <label>Mobile phone <span>Optional</span><input name="phone" type="tel" autoComplete="tel" maxLength="40" placeholder="For example, +1 302 555 0123" /></label><label className="field-full sms-consent"><input type="checkbox" name="smsConsent" value="true" /> Text me when this request is ready, declined, or cancelled. I agree to receive these ticket updates at the number above. Message/data rates may apply. You can also check progress with your ticket receipt.</label>
           </div>
         </fieldset>
 
         <fieldset className="form-card">
           <legend>Job details</legend>
           <div className="field-grid details-grid">
-            {machine === 'foam' && (
-              <label>Foam thickness <span>Required</span><select name="thickness" defaultValue="" required><option value="" disabled>Choose a thickness</option><option value="1">1 inch</option><option value="2">2 inches</option></select></label>
-            )}
-            <label>How many? <span>Required</span><input name="quantity" type="number" min="1" max="10000" step="1" defaultValue="1" required /></label>
-            <label>Finished width in inches <span>Required</span><input name="width" type="number" min="0.01" max={machine === 'printer' ? '24' : '10000'} step="any" placeholder={machine === 'printer' ? 'Example: 24' : 'Example: 20'} required /></label>
-            <label>Finished length in inches <span>Required</span><input name="length" type="number" min="0.01" max="100000" step="any" placeholder="Example: 36" required /></label>
+            {machine === 'foam' && <label>Foam thickness <span>Inches</span><input name="thickness" type="number" min="0.01" max="1000" step="any" placeholder="2" required /></label>}
+            <label>Quantity <span>Required</span><input name="quantity" type="number" min="1" max="10000" step="1" defaultValue="1" required /></label>
+            <label>Width <span>Inches</span><input name="width" type="number" min="0.01" max={machine === 'printer' ? '24' : '10000'} step="any" placeholder={machine === 'printer' ? '24' : '20'} required /></label>
+            <label>Length <span>Inches</span><input name="length" type="number" min="0.01" max="100000" step="any" placeholder="36" required /></label>
           </div>
-          <p className="field-help">{machine === 'printer' ? 'The widest print we can make is 24 inches. An admin will review the artwork and choose the print material.' : 'Enter the final size. Add a drawing or example file if you have one.'}</p>
+          <p className="field-help">{machine === 'printer' ? 'The maximum finished print width is 24 inches. An admin will review the artwork and choose the paper material.' : 'Enter the finished dimensions and add a cut layout or clear reference when available.'}</p>
 
-          <label className="upload-label" htmlFor="artwork-files">Artwork or example files <span>{machine === 'printer' ? 'Required' : 'Optional'}</span></label>
-          <div className="file-picker">
-            <input id="artwork-files" type="file" name="files" accept=".pdf,.svg,.dxf,.png,.jpg,.jpeg,.tif,.tiff" multiple onChange={event => { addFiles(event.target.files); event.target.value = ''; }} />
-            <p>Choose files from your computer or phone. You can use PDF, SVG, DXF, PNG, JPG, or TIFF files, up to 200 MB total.</p>
+          <label className="upload-label">Artwork files <span>{machine === 'printer' ? 'Required' : 'Optional'}</span></label>
+          <div className="dropzone" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
+            <UploadSimple size={30} weight="duotone" aria-hidden="true" />
+            <strong>Choose files or drop them here</strong>
+            <small>PDF, SVG, DXF, PNG, JPG, or TIFF · up to 200 MB total</small>
+            <input type="file" name="files" accept=".pdf,.svg,.dxf,.png,.jpg,.jpeg,.tif,.tiff" multiple onChange={event => { addFiles(event.target.files); event.target.value = ''; }} aria-label="Upload artwork files" />
           </div>
 
           {files.length > 0 && (
             <ul className="file-list">
               {files.map((file, index) => (
-                <li key={`${file.name}-${file.lastModified}-${index}`}><span><strong>{file.name}</strong><small>{(file.size / 1024 / 1024).toFixed(2)} MB</small></span><button type="button" onClick={() => setFiles(current => current.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${file.name}`}>Remove</button></li>
+                <li key={`${file.name}-${file.lastModified}-${index}`}><FileArrowUp aria-hidden="true" /><span><strong>{file.name}</strong><small>{(file.size / 1024 / 1024).toFixed(2)} MB</small></span><button type="button" onClick={() => setFiles(current => current.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${file.name}`}><X aria-hidden="true" /></button></li>
               ))}
             </ul>
           )}
 
-          <label className="notes-field">Anything else we should know? <span>Optional</span><textarea name="notes" rows="3" maxLength="4000" placeholder="Add colors, finishing, placement, or other instructions." /></label>
+          <details className="instructions">
+            <summary>Add more details <span>Optional</span></summary>
+            <label>Details<textarea name="notes" rows="3" maxLength="4000" placeholder="Finishing, placement, color, or anything else the workshop should know." /></label>
+          </details>
         </fieldset>
 
         <div className="submit-area">
-          <p>After you submit, an admin reviews the request before it enters the workshop queue. Approved jobs normally follow submission order, but staff may group jobs by material or machine setup.</p>
-          <button className="button button-primary submit-button" type="submit" disabled={submitting}>{submitting ? 'Submitting ticket…' : canRetry ? 'Try submitting again' : 'Submit ticket'}</button>
+          <p>Your ticket is saved before you receive a ticket number. An admin reviews each request before it enters the work queue. Approved jobs normally follow submission order, but staff may group jobs by material or adjust the working order. Timing depends on staff and material availability.</p>
+          <button className="button button-primary submit-button" type="submit" disabled={submitting}>{submitting ? 'Submitting ticket' : canRetry ? 'Try again' : 'Submit ticket'} <ArrowRight weight="bold" aria-hidden="true" /></button>
         </div>
         {submitting && <progress max="100" value={progress} aria-label={`Upload progress: ${progress}%`} />}
         {notice.text && <p className={notice.error ? 'notice error' : 'notice'} role={notice.error ? 'alert' : 'status'}>{notice.text}</p>}
@@ -297,16 +288,40 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
 }
 
 function TicketTracker({ recentTicket }) {
-  const [ticketCode, setTicketCode] = useState('');
+  const [ticketNumber, setTicketNumber] = useState('');
+  const [trackingCode, setTrackingCode] = useState('');
   const [result, setResult] = useState(null);
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (!recentTicket) return;
-    setTicketCode(recentTicket.trackingNumber || recentTicket.trackingCode || recentTicket.ticketNumber || '');
+    setTicketNumber(recentTicket.ticketNumber || '');
+    setTrackingCode(recentTicket.trackingCode || '');
     setResult(recentTicket);
   }, [recentTicket]);
+
+  useEffect(() => {
+    if (!result?.ticketNumber || staticPreview) return;
+    let live = true, busy = false;
+    const number = result.ticketNumber, code = result.trackingCode;
+    const timer = setInterval(async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        let updated;
+        if (SHEETS_API_URL) updated = await trackSheetsTicket(SHEETS_API_URL, { ticket: number, code });
+        else {
+          const response = await fetch(apiUrl(`/api/track/${encodeURIComponent(number)}?code=${encodeURIComponent(code || '')}`), { signal: AbortSignal.timeout(15000) });
+          if (!response.ok) throw new Error();
+          updated = { ...(await response.json()), trackingCode: code };
+        }
+        if (live) { setResult(updated); setNotice(''); }
+      } catch { if (live) setNotice('Automatic update failed. The displayed status may be out of date; try Track ticket again.'); }
+      finally { busy = false; }
+    }, 30000);
+    return () => { live = false; clearInterval(timer); };
+  }, [result?.ticketNumber, result?.trackingCode]);
 
   const track = async event => {
     event.preventDefault();
@@ -316,12 +331,12 @@ function TicketTracker({ recentTicket }) {
     try {
       let tracked;
       if (SHEETS_API_URL) {
-        tracked = await trackSheetsTicket(SHEETS_API_URL, { trackingNumber: ticketCode });
+        tracked = await trackSheetsTicket(SHEETS_API_URL, { ticket: ticketNumber, code: trackingCode });
       } else if (!staticPreview) {
-        const response = await fetch(apiUrl(`/api/track/${encodeURIComponent(ticketCode.trim())}`), { credentials: 'include', signal: AbortSignal.timeout(15000) });
+        const response = await fetch(apiUrl(`/api/track/${encodeURIComponent(ticketNumber.trim())}?code=${encodeURIComponent(trackingCode)}`), { credentials: 'include', signal: AbortSignal.timeout(15000) });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.error || 'The ticket could not be found.');
-        tracked = data;
+        tracked = { ...data, trackingCode };
       } else {
         throw new Error('The hosted ticket backend has not been connected yet.');
       }
@@ -336,18 +351,19 @@ function TicketTracker({ recentTicket }) {
   return (
     <section className="tracker-section" id="tracker" aria-labelledby="tracker-title">
       <div className="tracker-heading">
-        <h2 id="tracker-title">Track a ticket</h2>
-        <p>Enter the ticket code from your receipt to check its progress.</p>
+        <span className="tracker-icon"><ClockCounterClockwise size={28} weight="duotone" aria-hidden="true" /></span>
+        <div><p className="eyebrow">Ticket tracker</p><h2 id="tracker-title">Check your request.</h2><p>{SHEETS_API_URL ? 'Enter the ticket number and tracking code from your receipt.' : 'Enter the ticket number from your receipt.'}</p></div>
       </div>
-      <form className="tracker-form tracker-form-compact" onSubmit={track} aria-busy={loading}>
-        <label>Ticket code <span>Required</span><input value={ticketCode} onChange={event => setTicketCode(event.target.value.toUpperCase())} required minLength="6" maxLength="20" placeholder="DM-ABCD2345EFGH" autoComplete="off" /></label>
-        <button className="button button-primary" type="submit" disabled={loading}>{loading ? 'Checking…' : 'Check ticket'}</button>
+      <form className={SHEETS_API_URL ? 'tracker-form' : 'tracker-form tracker-form-compact'} onSubmit={track} aria-busy={loading}>
+        <label>Ticket number <span>Required</span><input value={ticketNumber} onChange={event => setTicketNumber(event.target.value.toUpperCase())} required maxLength="12" placeholder="P-0001" autoComplete="off" /></label>
+        {<label>Tracking code <span>{SHEETS_API_URL ? 'Required' : 'For private review details'}</span><input value={trackingCode} onChange={event => setTrackingCode(event.target.value.toUpperCase())} required={Boolean(SHEETS_API_URL)} minLength="8" maxLength={SHEETS_API_URL ? 8 : 16} placeholder="ABCD2345" autoComplete="off" /></label>}
+        <button className="button button-primary" type="submit" disabled={loading}>{loading ? 'Checking' : 'Track ticket'} <MagnifyingGlass aria-hidden="true" /></button>
       </form>
       {notice && <p className="notice error" role="alert">{notice}</p>}
       {result && (
         <div className="tracker-result" role="status" aria-live="polite">
           <span className={`status-dot status-${result.status}`} aria-hidden="true" />
-          <div><small>{result.trackingNumber || result.trackingCode || result.ticketNumber}</small><strong>{STATUS_LABELS[result.status] || result.status}</strong>{result.reason && <p>{result.reason}</p>}{result.status === 'pending-review' && <p>This request has not entered the production queue yet.</p>}<p>{machineName(result)}{result.position ? ` · Number in line ${result.position}` : ''}</p><CostEstimate estimate={result.costEstimate} /></div>
+          <div><small>{result.ticketNumber}</small><strong>{STATUS_LABELS[result.status] || result.status}</strong>{result.reason && <p>{result.reason}</p>}{result.status === 'pending-review' && <p>Your request has not entered the staff queue yet.</p>}<p>{machineName(result)}{result.position ? ` · ${result.position - 1} ${result.position === 2 ? 'job' : 'jobs'} ahead of you` : ''}</p></div>
         </div>
       )}
     </section>
@@ -357,11 +373,6 @@ function TicketTracker({ recentTicket }) {
 function App() {
   const [machine, setMachine] = useState(null);
   const [recentTicket, setRecentTicket] = useState(null);
-
-  useEffect(() => {
-    document.documentElement.classList.add('js');
-    return () => document.documentElement.classList.remove('js');
-  }, []);
 
   const chooseMachine = value => {
     setMachine(value);
@@ -374,11 +385,12 @@ function App() {
       <Header />
       {staticPreview && <div className="deployment-banner" role="status"><strong>Ticket service not connected</strong><span>Use the local workshop address to submit a live request.</span></div>}
       <main id="main" tabIndex="-1">
-        {!machine && <MachineChoice value={machine} onChange={chooseMachine} />}
+        <MachineChoice value={machine} onChange={chooseMachine} />
         {machine && <div id="ticket-form"><TicketForm machine={machine} onChangeMachine={chooseMachine} onTicket={setRecentTicket} /></div>}
         <QueueBoard apiBase={API_BASE_URL} sheetsUrl={SHEETS_API_URL} preview={staticPreview} recentTicket={recentTicket} />
         <TicketTracker recentTicket={recentTicket} />
       </main>
+      <footer><strong>Mandir Workshop Tickets</strong><span>Poster printing and foam cutting requests in one place.</span></footer>
     </div>
   );
 }

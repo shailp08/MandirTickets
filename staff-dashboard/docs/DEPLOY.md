@@ -14,7 +14,7 @@ The PC must be on the **same network as the printer** and have **internet**
 
 ```bash
 # Dashboard
-cd PrintingDashboard
+cd MandirTickets/staff-dashboard
 npm install
 cp .env.example .env          # set REACT_APP_SHEET_URL (see google/SETUP.md)
 

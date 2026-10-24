@@ -26,11 +26,17 @@ jobs:
           node-version: 22
           cache: npm
       - name: Install exact dependencies
-        run: npm ci
+        run: npm run setup
       - name: Audit production dependencies
         run: npm audit --omit=dev
       - name: Run tests
         run: npm test
+      - name: Test staff dashboard
+        run: npm run test:staff
+        env:
+          CI: true
+      - name: Build staff dashboard
+        run: npm run build:staff
       - name: Build Pages frontend
         run: npm run build
         env:

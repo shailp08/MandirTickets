@@ -8,22 +8,17 @@ import multer from 'multer';
 import { createStore, validateTicket, publicQueue, machines, papers, deadlines, statuses, fail } from './lib/store.js';
 import { createSheetsSync, csv } from './lib/sheets.js';
 import { validateFilename, validateUpload, createMalwareScanner } from './lib/uploads.js';
-import { acquireProcessLock } from './lib/process-lock.js';
-import { createNotificationService, createNotifications } from './lib/notifications.js';
-import { pricingFromEnvironment } from './lib/cost-estimate.js';
 import { createGoogleWorkshop } from './lib/google-workshop.js';
+import { createNotifications } from './lib/notifications.js';
 import { usageCsv } from './lib/workflow.js';
+import { acquireProcessLock } from './lib/process-lock.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.DATA_DIR || path.join(here, 'data');
 const uploadDir = path.join(dataDir, 'uploads');
 const legacyUploads = path.join(here, 'uploads');
 const production = process.env.NODE_ENV === 'production';
-const workshopGoogleUrl = String(process.env.WORKSHOP_GOOGLE_SCRIPT_URL || '').trim();
-// Existing installations already have a private Sheets secret. Reuse it during
-// the workshop migration unless a dedicated secret has been configured.
-const workshopGoogleSecret = String(process.env.WORKSHOP_SHARED_SECRET || process.env.SHEETS_SHARED_SECRET || '').trim();
-const googleMode = Boolean(workshopGoogleUrl);
+const googleMode = Boolean(process.env.WORKSHOP_GOOGLE_SCRIPT_URL);
 const scanner = createMalwareScanner(process.env.CLAMSCAN_PATH);
 const requestSite = process.env.PUBLIC_REQUEST_URL || '';
 if (requestSite && !/^https:\/\//.test(requestSite)) throw new Error('PUBLIC_REQUEST_URL must use HTTPS.');
@@ -36,42 +31,19 @@ function positiveInteger(value, fallback, name) {
 }
 const maxUploadBytes = positiveInteger(process.env.MAX_UPLOAD_BYTES, 200 * 1024 * 1024, 'MAX_UPLOAD_BYTES');
 const maxUploadFiles = positiveInteger(process.env.MAX_UPLOAD_FILES, 10, 'MAX_UPLOAD_FILES');
-const uploadIdleTimeoutMs = positiveInteger(process.env.UPLOAD_IDLE_TIMEOUT_MS, 60000, 'UPLOAD_IDLE_TIMEOUT_MS');
-const uploadRequestTimeoutMs = positiveInteger(process.env.UPLOAD_REQUEST_TIMEOUT_MS, 30 * 60 * 1000, 'UPLOAD_REQUEST_TIMEOUT_MS');
-if (production && ((!googleMode && !scanner) || !appOrigin?.startsWith('https://') || process.env.COOKIE_SECURE !== 'true' || (process.env.ADMIN_PASSWORD || '').length < 16)) {
-  throw new Error('Production requires CLAMSCAN_PATH for local uploads, an HTTPS APP_ORIGIN, COOKIE_SECURE=true, and an ADMIN_PASSWORD of at least 16 characters.');
+if (production && ((!googleMode && !scanner) || !appOrigin?.startsWith('https://') || process.env.COOKIE_SECURE !== 'true' || !process.env.ADMIN_PASSWORD)) {
+  throw new Error('Production requires CLAMSCAN_PATH for local uploads, an HTTPS APP_ORIGIN, COOKIE_SECURE=true, and a configured ADMIN_PASSWORD.');
 }
 if (process.env.STAFF_PASSWORD && process.env.STAFF_PASSWORD === process.env.ADMIN_PASSWORD) throw new Error('Staff and admin passwords must differ.');
 await fs.mkdir(uploadDir, { recursive: true });
 const releaseLock = acquireProcessLock(dataDir);
 process.once('exit', releaseLock);
-const pricing = pricingFromEnvironment(process.env);
-const store = await createStore(dataDir, { pricing });
+const store = await createStore(dataDir);
 const sheets = createSheetsSync(store, { url: process.env.SHEETS_WEBHOOK_URL, secret: process.env.SHEETS_SHARED_SECRET });
-const googleWorkshop = workshopGoogleUrl
-  ? createGoogleWorkshop({ url: workshopGoogleUrl, secret: workshopGoogleSecret }) : null;
+const googleWorkshop = process.env.WORKSHOP_GOOGLE_SCRIPT_URL ? createGoogleWorkshop({ url: process.env.WORKSHOP_GOOGLE_SCRIPT_URL, secret: process.env.WORKSHOP_SHARED_SECRET }) : null;
 if (googleWorkshop && process.env.SHEETS_WEBHOOK_URL) throw new Error('Use Google as the source of truth OR a local mirror, never both.');
-const defaultAdminNotificationEmail = 'demandirtickets@googlegroups.com';
-const notifications = await createNotificationService(dataDir, {
-  host: process.env.SMTP_HOST,
-  port: process.env.SMTP_PORT,
-  secure: process.env.SMTP_SECURE,
-  user: process.env.SMTP_USER,
-  password: process.env.SMTP_PASSWORD,
-  from: process.env.NOTIFICATION_FROM,
-  adminEmails: process.env.ADMIN_NOTIFICATION_EMAILS || defaultAdminNotificationEmail,
-  replyTo: process.env.NOTIFICATION_REPLY_TO || defaultAdminNotificationEmail,
-  appUrl: process.env.APP_ORIGIN,
-});
-await notifications.reconcile(store.list());
-const smsNotifications = await createNotifications({ directory: dataDir, apiKey: process.env.TEXTBEE_API_KEY, deviceId: process.env.TEXTBEE_DEVICE_ID });
-const workshop = googleWorkshop || {
-  review: (...args) => store.review(...args),
-  list: async () => store.list(),
-  update: (id, status, revision, reason) => store.update(id, status, revision, true, reason),
-  recordUsage: (...args) => store.recordUsage(...args),
-};
-const enqueueNotification = operation => operation.catch(error => console.error('Could not queue notification:', error.message));
+const notifications = await createNotifications({directory:dataDir,apiKey:process.env.TEXTBEE_API_KEY,deviceId:process.env.TEXTBEE_DEVICE_ID});
+const workshop = googleWorkshop || { review: (...args) => store.review(...args), list: async () => store.list(), update: (id, status, revision, reason) => store.update(id, status, revision, true, reason), recordUsage: (...args) => store.recordUsage(...args) };
 const app = express();
 app.disable('x-powered-by');
 app.use((req, res, next) => {
@@ -120,9 +92,7 @@ function requireStaff(req, res, next) {
   if (session && session.expires > Date.now()) { req.role = session.role; return next(); }
   res.status(401).json({ error: 'Sign in to the staff desk.' });
 }
-function requireAdmin(req, res, next) {
-  requireStaff(req, res, () => req.role === 'admin' ? next() : res.status(403).json({ error: 'Admin access is required to review requests.' }));
-}
+function requireAdmin(req,res,next) { requireStaff(req,res,() => req.role === 'admin' ? next() : res.status(403).json({error:'Admin access is required to review requests.'})); }
 const sameSecret = (a, b) => crypto.timingSafeEqual(crypto.createHash('sha256').update(a).digest(), crypto.createHash('sha256').update(b).digest());
 app.post('/api/session', (req, res) => {
   if (!process.env.ADMIN_PASSWORD) return res.status(503).json({ error: 'Set ADMIN_PASSWORD in the local configuration before staff sign-in.' });
@@ -132,18 +102,16 @@ app.post('/api/session', (req, res) => {
   if (!req.body || Array.isArray(req.body) || typeof req.body !== 'object') return res.status(400).json({ error: 'Send a JSON sign-in request.' });
   if (!attempts.has(key) && attempts.size >= 10000) return res.status(429).json({ error: 'Sign-in is busy. Try again later.' });
   const validInput = typeof req.body.password === 'string' && typeof req.body.username === 'string';
-  const role = !validInput ? null
-    : sameSecret(req.body.username, process.env.ADMIN_USERNAME || 'admin') && sameSecret(req.body.password, process.env.ADMIN_PASSWORD) ? 'admin'
-      : process.env.STAFF_PASSWORD && sameSecret(req.body.username, process.env.STAFF_USERNAME || 'workshop') && sameSecret(req.body.password, process.env.STAFF_PASSWORD) ? 'staff' : null;
+  const role = !validInput ? null : sameSecret(req.body.username, process.env.ADMIN_USERNAME || 'admin') && sameSecret(req.body.password,process.env.ADMIN_PASSWORD) ? 'admin' : process.env.STAFF_PASSWORD && sameSecret(req.body.username,process.env.STAFF_USERNAME || 'workshop') && sameSecret(req.body.password,process.env.STAFF_PASSWORD) ? 'staff' : null;
   if (!role) {
-    attempts.set(key, [...recent, Date.now()]); return res.status(401).json({ error: 'Incorrect staff password.' });
+    attempts.set(key, [...recent, Date.now()]); return res.status(401).json({ error: 'Incorrect username or password.' });
   }
   attempts.delete(key);
   for (const [token, session] of sessions) if (session.expires <= Date.now()) sessions.delete(token);
   sessions.delete(sessionToken(req));
   if (sessions.size >= 1000) return res.status(503).json({ error: 'Too many active staff sessions. Try again later.' });
   const token = crypto.randomBytes(32).toString('hex');
-  sessions.set(token, { expires: Date.now() + 8 * 3600000, role });
+  sessions.set(token, {expires:Date.now() + 8 * 3600000,role});
   res.cookie('desk_session', token, { ...sessionCookie(req), maxAge: 8 * 3600000 });
   res.json({ ok: true, role });
 });
@@ -152,24 +120,14 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date().toIS
 app.get('/api/config', (_req, res) => res.json({ machines, paperTypes: papers, turnaroundOptions: deadlines, statuses,
   uploads: { maxFiles: maxUploadFiles, maxFileBytes: maxUploadBytes } }));
 app.get('/api/queue', async (_req, res) => res.json({ machines: publicQueue(await workshop.list()), updatedAt: new Date().toISOString() }));
-const positionFor = (ticket, tickets) => publicQueue(tickets).find(machine => machine.id === ticket.machine)
-  ?.tickets.find(candidate => candidate.ticketNumber === ticket.ticketNumber)?.position || null;
-const publicTicket = (ticket, tickets) => ({
-  trackingNumber: ticket.trackingNumber,
-  machine: ticket.machine,
-  status: ticket.status,
-  position: positionFor(ticket, tickets),
-  costEstimate: ticket.costEstimate,
-  reason: ticket.reason || '',
-  createdAt: ticket.createdAt,
-});
 app.get('/api/track/:number', async (req, res) => {
-  const number = String(req.params.number || '').trim().toUpperCase();
-  const tickets = await workshop.list();
-  const ticket = /^DM-[A-HJ-NP-Z2-9]{12}$/.test(number)
-    ? tickets.find(candidate => candidate.trackingNumber === number) : null;
-  if (!ticket) return res.status(404).json({ error: 'Request not found. Check the ticket code on your receipt.' });
-  res.json(publicTicket(ticket, tickets));
+  const records = await workshop.list();
+  const ticket = records.find(t => t.ticketNumber.toUpperCase() === req.params.number.toUpperCase());
+  if (!ticket) return res.status(404).json({ error: 'Ticket not found. Check the number on your receipt.' });
+  const queue = publicQueue(records).find(m => m.id === ticket.machine);
+  res.json({ ticketNumber: ticket.ticketNumber, machine: ticket.machine, machineName: machines[ticket.machine], status: ticket.status,
+    reason: ticket.trackingCode && req.query.code === ticket.trackingCode ? ticket.reason || '' : '',
+    position: queue.tickets.find(t => t.ticketNumber === ticket.ticketNumber)?.position || null });
 });
 const upload = multer({ limits: { fields: 20, fieldSize: 16384, files: maxUploadFiles, fileSize: maxUploadBytes }, storage: multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadDir),
@@ -186,30 +144,7 @@ app.post('/api/tickets', (req, res, next) => {
   if (activeUploads >= 4) return res.status(429).json({ error: 'The upload service is busy. Try again shortly.' });
   activeUploads++;
   let released = false;
-  let idleTimer;
-  let requestTimer;
-  const release = () => {
-    if (released) return;
-    released = true;
-    activeUploads--;
-    clearTimeout(idleTimer);
-    clearTimeout(requestTimer);
-    req.off('data', armIdleTimeout);
-  };
-  const abortStalledUpload = () => {
-    release();
-    req.destroy();
-  };
-  function armIdleTimeout() {
-    clearTimeout(idleTimer);
-    idleTimer = setTimeout(abortStalledUpload, uploadIdleTimeoutMs);
-    idleTimer.unref();
-  }
-  req.on('data', armIdleTimeout);
-  req.once('end', () => { clearTimeout(idleTimer); clearTimeout(requestTimer); });
-  armIdleTimeout();
-  requestTimer = setTimeout(abortStalledUpload, uploadRequestTimeoutMs);
-  requestTimer.unref();
+  const release = () => { if (!released) { released = true; activeUploads--; } };
   req.releaseUploadSlot = release;
   res.once('close', () => { if (!req.processingUpload) release(); });
   res.once('finish', release);
@@ -229,39 +164,34 @@ app.post('/api/tickets', (req, res, next) => {
     const { ticket, duplicate } = await store.create(details, key);
     committed = !duplicate;
     if (duplicate) await cleanup(req.files);
-    if (!duplicate) await enqueueNotification(notifications.ticketCreated(ticket));
     void sheets.sync();
-    res.status(duplicate ? 200 : 201).json({ ticket: { ...publicTicket(ticket, store.list()), department: ticket.department } });
+    res.status(duplicate ? 200 : 201).json({ ticket: { ticketNumber: ticket.ticketNumber, machine: ticket.machine, status: ticket.status,
+      createdAt: ticket.createdAt, department: ticket.department, trackingCode: ticket.trackingCode,
+      position: publicQueue(store.list()).find(m => m.id === ticket.machine).tickets.find(t => t.ticketNumber === ticket.ticketNumber)?.position || null } });
   } catch (error) { if (!committed) await cleanup(req.files); next(error); }
   finally { req.releaseUploadSlot(); }
 });
-const visibleToStaff = ticket => !['pending-review', 'declined'].includes(ticket.status);
-app.get('/api/tickets', requireStaff, async (req, res) => res.json({
-  tickets: (await workshop.list()).filter(visibleToStaff).map(smsNotifications.decorate), role: req.role,
-  source: googleWorkshop ? 'google' : 'local', sheets: sheets.state(), emailNotifications: notifications.state(), updatedAt: new Date().toISOString(),
-}));
-app.get('/api/admin/requests', requireAdmin, async (_req, res) => res.json({ tickets: (await workshop.list()).map(smsNotifications.decorate) }));
-app.post('/api/admin/requests/:id/review', requireAdmin, async (req, res) => {
+const visibleToStaff = t => !['pending-review','declined'].includes(t.status);
+app.get('/api/tickets', requireStaff, async (req,res) => res.json({tickets:(await workshop.list()).filter(visibleToStaff).map(notifications.decorate),role:req.role,source:googleWorkshop?'google':'local',sheets:sheets.state(),updatedAt:new Date().toISOString()}));
+app.get('/api/admin/requests', requireAdmin, async (_req,res) => res.json({tickets:(await workshop.list()).map(notifications.decorate)}));
+app.post('/api/admin/requests/:id/review', requireAdmin, async (req,res) => {
   if (!Number.isSafeInteger(req.body?.expectedRevision)) fail('Refresh before reviewing.');
-  const ticket = await workshop.review(req.params.id, req.body, req.body.expectedRevision);
-  if (!googleWorkshop) await enqueueNotification(notifications.ticketUpdated(ticket));
-  void smsNotifications.reconcile(await workshop.list()).catch(error => console.error('SMS notification processing failed:', error.message));
-  void sheets.sync();
-  res.json({ ticket: smsNotifications.decorate(ticket) });
+  const ticket = await workshop.review(req.params.id,req.body,req.body.expectedRevision);
+  void notifications.reconcile(await workshop.list()).catch(e=>console.error('Notification processing failed:',e.message));
+  void sheets.sync(); res.json({ticket:notifications.decorate(ticket)});
 });
-app.post('/api/tickets/:id/notifications/:notificationId/retry', requireStaff, async (req, res) => {
-  const ticket = (await workshop.list()).find(candidate => candidate.id === req.params.id);
-  if (!ticket || (req.role !== 'admin' && !visibleToStaff(ticket))) fail('Ticket not found.', 404);
-  res.json({ ticket: await smsNotifications.retry(req.params.notificationId, ticket) });
+app.post('/api/tickets/:id/notifications/:notificationId/retry', requireStaff, async(req,res) => {
+  const ticket=(await workshop.list()).find(t=>t.id===req.params.id);
+  if (!ticket || (req.role !== 'admin' && !visibleToStaff(ticket))) fail('Ticket not found.',404);
+  res.json({ticket:await notifications.retry(req.params.notificationId,ticket)});
 });
 app.patch('/api/tickets/:id', requireStaff, async (req, res) => {
   if (!req.body || !Number.isSafeInteger(req.body.expectedRevision) || req.body.expectedRevision < 1) fail('Refresh the ticket before changing its status.');
-  if (!['in-progress', 'ready', 'collected', 'cancelled'].includes(req.body.status)) fail('Use an approved production workflow step.', 409);
+  if (!['in-progress','ready','collected','cancelled'].includes(req.body.status)) fail('Use an approved production workflow step.',409);
   const ticket = await workshop.update(req.params.id, req.body.status, req.body.expectedRevision, req.body.reason);
-  if (!googleWorkshop && ticket.revision > req.body.expectedRevision) await enqueueNotification(notifications.ticketUpdated(ticket));
-  void smsNotifications.reconcile(await workshop.list()).catch(error => console.error('SMS notification processing failed:', error.message));
+  void notifications.reconcile(await workshop.list()).catch(e=>console.error('Notification processing failed:',e.message));
   void sheets.sync();
-  res.json({ ticket: smsNotifications.decorate(ticket) });
+  res.json({ ticket });
 });
 app.get('/api/tickets/:id/files/:name', requireStaff, async (req, res) => {
   const ticket = store.list().find(t => t.id === req.params.id);
@@ -281,12 +211,11 @@ app.post('/api/sheets/sync', requireAdmin, async (_req, res) => res.json({ sheet
 app.post('/api/tickets/:id/usage', requireStaff, async (req, res) => {
   if (!Number.isSafeInteger(req.body?.expectedRevision) || req.body.expectedRevision < 1) fail('Refresh the ticket before recording usage.');
   const ticket = await workshop.recordUsage(req.params.id, req.body, req.body.expectedRevision);
-  res.json({ ticket: smsNotifications.decorate(ticket) });
+  res.json({ ticket });
 });
-app.get('/api/usage/export', requireStaff, async (_req, res) => {
-  res.type('text/csv').attachment('mandir-material-usage.csv').send(usageCsv(await workshop.list()));
-});
-const staffBuild = process.env.STAFF_BUILD_DIR || path.resolve(here, 'PrintingDashboard/build');
+app.get('/api/usage/export', requireStaff, async (_req, res) => res.type('text/csv').attachment('mandir-material-usage.csv').send(usageCsv(await workshop.list())));
+// Build staff-dashboard with PUBLIC_URL=/staff; both apps share this origin and session.
+const staffBuild = process.env.STAFF_BUILD_DIR || path.join(here, 'staff-dashboard/build');
 app.use('/staff', express.static(staffBuild));
 if (googleMode) app.get('/', (_req, res) => res.redirect(requestSite || '/staff/'));
 app.use(express.static(path.join(here, 'dist')));
@@ -298,20 +227,14 @@ app.use((error, _req, res, next) => {
     LIMIT_FILE_COUNT: `Attach no more than ${maxUploadFiles} files.`, LIMIT_UNEXPECTED_FILE: `Attach no more than ${maxUploadFiles} files.` })[error.code];
   res.status(status).json({ error: uploadMessage || (error.type === 'entity.parse.failed' ? 'Invalid JSON request.' : status === 500 ? 'Could not save this request. Please try again.' : error.message) });
 });
-async function background() {
-  await sheets.sync();
-  if (!googleWorkshop) void notifications.reconcile(store.list()).catch(error => console.error('Could not reconcile email notifications:', error.message));
-  try { await smsNotifications.reconcile(await workshop.list()); }
-  catch (error) { console.error('SMS notification processing failed:', error.message); }
-}
+async function background() { await sheets.sync(); try { await notifications.reconcile(await workshop.list()); } catch(e) { console.error('Notification processing failed:',e.message); } }
 const interval = setInterval(() => void background(), 30000);
 interval.unref();
 void background();
-const server = app.listen(Number(process.env.PORT || 3000), process.env.HOST || '0.0.0.0', () => console.log('Delaware Mandir Ticket Desk ready on port ' + server.address().port));
-server.requestTimeout = uploadRequestTimeoutMs;
-server.headersTimeout = Math.min(60000, uploadRequestTimeoutMs);
+const server = app.listen(Number(process.env.PORT || 3000), process.env.HOST || '0.0.0.0', () => console.log('Mandir Ticket Desk ready on port ' + server.address().port));
+server.requestTimeout = 0; // Stream large uploads without an application timeout.
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
-  clearInterval(interval); clearInterval(authCleanup); notifications.close();
+  clearInterval(interval); clearInterval(authCleanup);
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(1), 30000).unref();
 });
