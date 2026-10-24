@@ -57,7 +57,7 @@ function googleHarness() {
   ctx.jsonResponse_=v=>JSON.parse(JSON.stringify(v));
   ctx.openBook_=()=>({});
   ctx.ensureTicketSheet_=()=>({getLastRow:()=>rows.length+1,getRange:(r,c,n=1,w=1)=>({getValues:()=>rows.slice(r-2,r-2+n).map(row=>row.slice(c-1,c-1+w)),setValues:values=>{values.forEach((v,i)=>rows[r-2+i]=v);}})});
-  const make=(id,num,machine,created)=>[id,num,machine,'Private Name','Events','Secret design','Private phone',1,'Glossy',24,36,2,'Today','queued','Private notes','poster.pdf: https://drive.google.com/file/d/abcdefghijklmnop/view',created,created,1,'SECRET12','private-key','GitHub Pages','',''];
+  const make=(id,num,machine,created)=>[id,num,machine,'Private Name','Events','Secret design','Private phone',1,'Glossy',24,36,2,'Today','queued','Private notes','poster.pdf: https://drive.google.com/file/d/abcdefghijklmnop/view',created,created,1,'SECRET12','private-key','GitHub Pages','','','','','','[]','[]','',''];
   // Physical row order is reversed, as happens when staff sort the Sheet.
   rows=[make('b','F-0002','Foam cutting','2026-10-22T10:01:00Z'),make('a','F-0001','Foam cutting','2026-10-22T10:00:00Z'),make('p','P-0001','Poster printing','2026-10-22T10:00:00Z')];
   const call=(action,body={},secret='s'.repeat(32))=>ctx.doPost({postData:{contents:JSON.stringify({action,secret,...body})}});
@@ -98,7 +98,7 @@ test('Google adapter keeps authentication server-side and fails closed instead o
 });
 
 test('Google review edits details with revision protection, decline reasons and no public leakage',()=>{
-  const {ctx,call,getRows}=googleHarness(); const row=getRows()[0]; row[13]='pending-review'; row[8]=''; row[24]='yes'; row[6]='+13025550123';
+  const {ctx,call,getRows}=googleHarness(); const row=getRows()[0]; row[13]='pending-review'; row[8]=''; row[29]='yes'; row[6]='+13025550123';
   assert.equal(ctx.publicWorkshopQueue_().machines[1].waiting,1);
   const pending=ctx.publicWorkshopQueue_().machines[1].tickets.find(t=>t.ticketNumber==='F-0002');
   assert.equal(pending.status,'pending-review');assert.equal(pending.position,null);
@@ -112,7 +112,7 @@ test('Google review edits details with revision protection, decline reasons and 
   assert.equal(call('adminReview',{id:'b',expectedRevision:2,input:{decision:'decline',operator:'Admin'}}).status,400);
   const declined=call('adminReview',{id:'b',expectedRevision:2,input:{decision:'decline',operator:'Admin',reason:'Please send sharper artwork'}});
   assert.equal(declined.ticket.status,'declined'); assert.equal(declined.ticket.history[1].notification.phone,'+13025550123');
-  assert.equal(getRows()[0][19],'SECRET12'); assert.equal(getRows()[0][25],'Please send sharper artwork');
+  assert.equal(getRows()[0][19],'SECRET12'); assert.equal(getRows()[0][30],'Please send sharper artwork');
   assert.ok(!JSON.stringify(ctx.publicWorkshopQueue_()).includes('Private phone'));
 });
 test('review cannot replace local file paths, mutate identifiers, or reuse numbers after moving machines',async t=>{
@@ -126,7 +126,7 @@ test('review cannot replace local file paths, mutate identifiers, or reuse numbe
 test('rollout holds only unreviewed queued backlog and is repeatable',()=>{
   const {ctx,getRows}=googleHarness();const rows=getRows();
   rows[1][13]='in-progress';
-  rows[2][23]=JSON.stringify([{status:'queued',operator:'Admin',changes:[],at:'2026-10-23T01:00:00Z'}]);
+  rows[2][28]=JSON.stringify([{status:'queued',operator:'Admin',changes:[],at:'2026-10-23T01:00:00Z'}]);
   ctx.holdUnreviewedQueueForAdminReview();
   assert.equal(rows[0][13],'pending-review');assert.equal(rows[0][18],2);
   assert.equal(rows[1][13],'in-progress');assert.equal(rows[2][13],'queued');

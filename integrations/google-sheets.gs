@@ -7,7 +7,9 @@ var HEADERS = [
   'Ticket ID', 'Queue number', 'Machine', 'Name', 'Department', 'Purpose', 'Phone',
   'Quantity', 'Paper', 'Width (in)', 'Length (in)', 'Thickness (in)', 'Needed by',
   'Status', 'Notes', 'Files', 'Created', 'Updated', 'Revision',
-  'Tracking code', 'Request key', 'Source', 'Material usage', 'Staff history', 'SMS consent', 'Review reason'
+  'Tracking code', 'Request key', 'Source', 'Customer email', 'Last notified status',
+  'Approx. cost (USD)', 'Cost basis', 'Cost estimate version',
+  'Material usage', 'Staff history', 'SMS consent', 'Review reason'
 ];
 var STATUSES = ['pending-review', 'declined', 'queued', 'in-progress', 'ready', 'collected', 'cancelled'];
 var MACHINES = { printer: 'Poster printing', foam: 'Foam cutting' };
@@ -152,7 +154,8 @@ function doPost(event) {
       request.department, request.purpose, request.phone, request.quantity,
       request.paperType, request.width, request.length, request.thickness,
       request.neededBy, 'pending-review', request.notes, uploadedFiles.join('\n'),
-      createdAt, createdAt, 1, trackingCode, request.requestKey, 'GitHub Pages', '[]', '[]', request.smsConsent ? 'yes' : '', ''
+      createdAt, createdAt, 1, trackingCode, request.requestKey, 'GitHub Pages',
+      '', '', '', '', '', '[]', '[]', request.smsConsent ? 'yes' : '', ''
     ];
     sheet.getRange(sheet.getLastRow() + 1, 1, 1, HEADERS.length).setValues([row.map(escapeCell_)]);
     SpreadsheetApp.flush();
@@ -207,7 +210,7 @@ function trackTicket_(params) {
       machineName: String(row[2]),
       status: status,
       position: position,
-      reason: String(row[25] || ''),
+      reason: String(row[30] || ''),
       createdAt: row[16] instanceof Date ? row[16].toISOString() : String(row[16])
     }
   };
@@ -661,7 +664,7 @@ function staffTicket_(row) {
       var match = /https:\/\/drive\.google\.com\/file\/d\/([A-Za-z0-9_-]+)/.exec(entry);
       return match ? { originalName: entry.slice(0, entry.indexOf(match[0])).replace(/[\s—:|-]+$/, '') || 'Artwork', url: 'https://drive.google.com/file/d/' + match[1] + '/view' } : null;
     }).filter(Boolean), createdAt: date(row[16]), updatedAt: date(row[17]), revision: Number(row[18]) || 1,
-    usage: parsed(row[22]), history: parsed(row[23]), smsConsent: row[24] === 'yes', reason: String(row[25] || '') };
+    usage: parsed(row[27]), history: parsed(row[28]), smsConsent: row[29] === 'yes', reason: String(row[30] || '') };
 }
 function workshopRows_(sheet) { return sheet.getLastRow() < 2 ? [] : sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADERS.length).getValues(); }
 function publicWorkshopQueue_() {
@@ -721,10 +724,10 @@ function staffAction_(input, lock, publicAccess) {
       row[7] = ticket.quantity; row[8] = ticket.paperType; row[9] = ticket.width; row[10] = ticket.length; row[11] = ticket.thickness;
       row[12] = ticket.neededBy; row[14] = ticket.notes; row[15] = ticket.files.map(f => f.originalName + ' — ' + f.url).join('\n');
     }
-    row[24] = ticket.smsConsent ? 'yes' : ''; row[25] = ticket.reason || '';
+    row[29] = ticket.smsConsent ? 'yes' : ''; row[30] = ticket.reason || '';
     row[13] = ticket.status; row[17] = now; row[18] = ticket.revision;
-    row[22] = JSON.stringify(ticket.usage); row[23] = JSON.stringify(ticket.history);
-    if (row[22].length > 45000 || row[23].length > 45000) workshopFail_('This ticket has reached its history limit. Contact the coordinator.');
+    row[27] = JSON.stringify(ticket.usage); row[28] = JSON.stringify(ticket.history);
+    if (row[27].length > 45000 || row[28].length > 45000) workshopFail_('This ticket has reached its history limit. Contact the coordinator.');
     sheet.getRange(index + 2, 1, 1, HEADERS.length).setValues([row.map(escapeCell_)]);
     SpreadsheetApp.flush();
     return jsonResponse_({ ok: true, ticket: ticket });
@@ -745,7 +748,7 @@ function holdUnreviewedQueueForAdminReview() {
       if (ticket.status !== 'queued' || approved) return;
       var now = new Date().toISOString();
       ticket.history.push({status:'pending-review',at:now,reason:'Existing unstarted request moved to admin review during rollout.'});
-      row[13] = 'pending-review'; row[17] = now; row[18] = ticket.revision + 1; row[23] = JSON.stringify(ticket.history);
+      row[13] = 'pending-review'; row[17] = now; row[18] = ticket.revision + 1; row[28] = JSON.stringify(ticket.history);
       sheet.getRange(index + 2,1,1,HEADERS.length).setValues([row.map(escapeCell_)]);
     });
     SpreadsheetApp.flush();

@@ -287,7 +287,10 @@ test('duplicate createTicket requests write one Sheet row and reuse the first ti
   assert.equal(duplicate.duplicate, true);
   assert.equal(writtenRows.length, 1);
   assert.equal(writtenRows[0][13], 'pending-review');
-  assert.equal(writtenRows[0].length, 26);
+  assert.equal(writtenRows[0].length, 31);
+  assert.equal(writtenRows[0].slice(22, 27).join(','), ',,,,');
+  assert.equal(writtenRows[0][27], '[]');
+  assert.equal(writtenRows[0][28], '[]');
   assert.equal(fileSaves, 1);
   assert.equal(dailyIncrements, 1);
 });
