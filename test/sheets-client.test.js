@@ -3,9 +3,12 @@ import assert from 'node:assert/strict';
 import {
   createSheetsTicket,
   driveNextOffset,
+  legacySheetsDeadline,
+  legacySheetsNotes,
   retrySheetsTransport,
   uploadDriveFile,
   validateFileTypes,
+  validateNeededByDate,
   validateSheetsFiles,
   SHEETS_MAX_FILE_BYTES,
   SHEETS_MAX_FILES,
@@ -26,7 +29,7 @@ const requestDetails = requestKey => ({
   quantity: '1',
   width: '24',
   length: '36',
-  neededBy: 'No rush',
+  neededBy: '2099-12-31',
   paperType: 'Standard',
   website: '',
 });
@@ -120,6 +123,17 @@ test('Google Sheets client enforces count, extension, per-file, and total limits
   assert.throws(() => validateSheetsFiles([file('installer.exe')], 'printer'), /PDF or JPG/i);
   assert.throws(() => validateSheetsFiles([file('oversize.pdf', SHEETS_MAX_FILE_BYTES + 1)], 'printer'), /200 MB/i);
   assert.throws(() => validateSheetsFiles([file('one.pdf', SHEETS_MAX_TOTAL_BYTES), file('two.pdf', 1)], 'printer'), /200 MB/i);
+});
+
+test('calendar dates are validated and mapped for the currently deployed Sheets backend', () => {
+  assert.equal(validateNeededByDate('2099-12-31'), '2099-12-31');
+  assert.throws(() => validateNeededByDate('2099-02-29'), /valid needed-by date/i);
+  const now = new Date(2026, 9, 24, 12);
+  assert.equal(legacySheetsDeadline('2026-10-24', now), 'Today');
+  assert.equal(legacySheetsDeadline('2026-10-25', now), 'Tomorrow');
+  assert.equal(legacySheetsDeadline('2026-10-30', now), 'This week');
+  assert.equal(legacySheetsDeadline('2026-11-15', now), 'No rush');
+  assert.equal(legacySheetsNotes('Use the blue logo.', '2026-11-15'), 'Needed by date: 2026-11-15\nUse the blue logo.');
 });
 
 test('Google Sheets client retries transient transport failures', async () => {
@@ -331,6 +345,9 @@ test('ticket creation preserves file identity metadata from selection through th
   });
 
   assert.equal(posted.action, 'createTicket');
+  assert.equal(posted.neededByDate, '2099-12-31');
+  assert.equal(posted.neededBy, 'No rush');
+  assert.equal(posted.notes, 'Needed by date: 2099-12-31');
   assert.deepEqual(posted.files, [{
     id: 'drive_file_metadata',
     index: 0,

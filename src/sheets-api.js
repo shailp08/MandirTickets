@@ -9,6 +9,34 @@ const SHEETS_REQUEST_ATTEMPTS = 5;
 const uploadedFilesByRequest = new Map();
 const wait = milliseconds => new Promise(resolve => window.setTimeout(resolve, milliseconds));
 
+export function validateNeededByDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''));
+  if (!match) throw new Error('Choose a valid needed-by date.');
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  if (date.toISOString().slice(0, 10) !== value) throw new Error('Choose a valid needed-by date.');
+  return value;
+}
+
+// Keep the current deployed Apps Script compatible until its separately
+// versioned backend is republished. New versions prefer neededByDate below.
+export function legacySheetsDeadline(value, now = new Date()) {
+  validateNeededByDate(value);
+  const target = Date.parse(`${value}T00:00:00Z`);
+  const start = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const days = Math.round((target - start) / 86400000);
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Tomorrow';
+  if (days <= 7) return 'This week';
+  return 'No rush';
+}
+
+export function legacySheetsNotes(value, neededBy) {
+  const note = String(value || '');
+  const result = `Needed by date: ${validateNeededByDate(neededBy)}${note ? `\n${note}` : ''}`;
+  if (result.length > 4000) throw new Error('Notes are too long to include the needed-by date.');
+  return result;
+}
+
 const fileRule = machine => {
   if (machine === 'printer') return { pattern: /\.(pdf|jpe?g)$/i, message: 'Poster printing accepts PDF or JPG files only.' };
   if (machine === 'foam') return { pattern: /\.(svg|dxf)$/i, message: 'Foam cutting accepts SVG or DXF files only.' };
@@ -252,6 +280,8 @@ async function uploadFiles(url, details, files, onProgress) {
 }
 
 export async function createSheetsTicket(url, details, files, onProgress) {
+  validateNeededByDate(details.neededBy);
+  const compatibleNotes = legacySheetsNotes(details.notes, details.neededBy);
   const uploadedFiles = await uploadFiles(url, details, files, onProgress);
   onProgress?.(92);
   await fetch(url, {
@@ -259,7 +289,14 @@ export async function createSheetsTicket(url, details, files, onProgress) {
     mode: 'no-cors',
     cache: 'no-store',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ action: 'createTicket', ...details, files: uploadedFiles }),
+    body: JSON.stringify({
+      action: 'createTicket',
+      ...details,
+      neededByDate: details.neededBy,
+      neededBy: legacySheetsDeadline(details.neededBy),
+      notes: compatibleNotes,
+      files: uploadedFiles,
+    }),
   });
   onProgress?.(95);
   let lastError;

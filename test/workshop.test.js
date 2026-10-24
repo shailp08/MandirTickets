@@ -34,6 +34,13 @@ test('review gates production; approved jobs can start out of order; material hi
   assert.equal((await createStore(dir)).list()[0].usage[0].used,6);
   assert.match(usageCsv(store.list()),/Foam 2 in/);
 });
+test('review accepts an exact calendar deadline while preserving legacy timing values', async t => {
+  const {store}=await setup(t);
+  const {ticket}=await store.create(validateTicket({...details,neededBy:'2099-12-31'},[]),'calendar');
+  const reviewed=await store.review(ticket.id,{decision:'save',operator:'Admin',fields:{neededBy:'2099-11-30'}},1);
+  assert.equal(reviewed.neededBy,'2099-11-30');
+  await assert.rejects(store.review(reviewed.id,{decision:'save',operator:'Admin',fields:{neededBy:'2099-02-29'}},2),/valid requested deadline/i);
+});
 test('simultaneous usage saves cannot double-count or overwrite another volunteer', async t => {
   const {store}=await setup(t); const {ticket}=await store.create(validateTicket(details,[]),'a');
   await store.review(ticket.id,{decision:'approve',operator:'Admin'},1);

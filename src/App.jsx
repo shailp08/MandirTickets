@@ -26,6 +26,10 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, ''
 const SHEETS_API_URL = (import.meta.env.VITE_GOOGLE_SCRIPT_URL || '').replace(/\/$/, '');
 const apiUrl = path => `${API_BASE_URL}${path}`;
 const staticPreview = location.hostname.endsWith('.github.io') && !API_BASE_URL && !SHEETS_API_URL;
+const today = (() => {
+  const value = new Date();
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+})();
 
 const STATUS_LABELS = { 'pending-review': 'In Review', declined: 'Declined',
   queued: 'Waiting',
@@ -235,7 +239,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
             <label>Name <span>Required</span><input name="customerName" autoComplete="name" required maxLength="100" placeholder="Your name" /></label>
             <label>Department <span>Required</span><input name="department" required maxLength="100" placeholder="Decorations, Events, Youth" /></label>
             <label className="field-full">What is this for? <span>Required</span><textarea name="purpose" required maxLength="2000" rows="4" placeholder="Tell us about the event or project." /></label>
-            <label>Needed by <span>Required</span><select name="neededBy" required defaultValue="No rush"><option>Today</option><option>Tomorrow</option><option>This week</option><option>No rush</option></select></label>
+            <label>Needed by <span>Required</span><input name="neededBy" type="date" min={today} required /></label>
           </div>
         </fieldset>
 
@@ -267,7 +271,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
 
           <details className="instructions">
             <summary>Add more details <span>Optional</span></summary>
-            <label>Details<textarea name="notes" rows="3" maxLength="4000" placeholder="Finishing, placement, color, or anything else the workshop should know." /></label>
+            <label>Details<textarea name="notes" rows="3" maxLength="3950" placeholder="Finishing, placement, color, or anything else the workshop should know." /></label>
           </details>
         </fieldset>
 

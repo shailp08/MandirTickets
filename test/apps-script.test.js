@@ -49,6 +49,13 @@ test('Apps Script backend validates a complete foam ticket', () => {
   assert.equal(ticket.thickness, 2);
 });
 
+test('Apps Script backend accepts calendar deadlines and removes the legacy notes marker', () => {
+  const ticket = context.validatePublicTicket_({ ...baseTicket(), neededByDate: '2099-12-31', notes: 'Needed by date: 2099-12-31\nBlue logo' });
+  assert.equal(ticket.neededBy, '2099-12-31');
+  assert.equal(ticket.notes, 'Blue logo');
+  assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), neededByDate: '2099-02-29' }), /valid needed-by date/i);
+});
+
 test('Apps Script backend requires a safe print file and rejects bot submissions', () => {
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), machine: 'printer', paperType: 'Standard' }), /print-ready file/i);
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), website: 'spam' }), /Unable to accept/i);

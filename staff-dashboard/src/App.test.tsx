@@ -46,4 +46,5 @@ test('admins see review inbox while production queue contains approved jobs only
   fireEvent.click(screen.getByRole('button',{name:/P-0003/}));
   expect(screen.getByRole('button',{name:'Approve for staff queue'})).toBeDisabled();
   expect(screen.getByLabelText('Paper material')).toBeInTheDocument();
+  expect(screen.getByLabelText(/Requested deadline/)).toHaveAttribute('type','date');
 });

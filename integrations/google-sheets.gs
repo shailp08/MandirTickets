@@ -217,6 +217,11 @@ function validatePublicTicket_(input) {
   if (input.website) throw new Error('Unable to accept this request.');
   validateRequestWindow_(input.startedAt);
   var machine = requiredChoice_(input.machine, MACHINES, 'Choose a machine.');
+  var notesInput = String(input.notes || '');
+  if (input.neededByDate) {
+    var compatibilityPrefix = 'Needed by date: ' + String(input.neededByDate);
+    if (notesInput.indexOf(compatibilityPrefix) === 0) notesInput = notesInput.slice(compatibilityPrefix.length).replace(/^\n/, '');
+  }
   var requestKey = String(input.requestKey || '').toLowerCase();
   if (!/^[a-f0-9]{32}$/.test(requestKey)) throw new Error('Refresh the form and submit again.');
   var request = {
@@ -227,11 +232,11 @@ function validatePublicTicket_(input) {
     purpose: cleanText_(input.purpose, 'Purpose', 2000, true),
     phone: cleanText_(input.phone, 'Phone', 40, false),
     smsConsent: input.smsConsent === true || input.smsConsent === 'true' || input.smsConsent === 'on',
-    notes: cleanText_(input.notes, 'Notes', 4000, false),
+    notes: cleanText_(notesInput, 'Notes', 4000, false),
     quantity: positiveNumber_(input.quantity, 'Quantity', 10000, true),
     width: positiveNumber_(input.width, 'Width', machine === 'printer' ? 24 : 10000, false),
     length: positiveNumber_(input.length, 'Length', 100000, false),
-    neededBy: requiredArrayChoice_(input.neededBy, DEADLINES, 'Choose when the job is needed.'),
+    neededBy: neededByDate_(input.neededByDate || input.neededBy),
     paperType: '',
     thickness: '',
     files: validateFiles_(input.files || [], machine)
@@ -243,6 +248,16 @@ function validatePublicTicket_(input) {
   }
   request.phone = normalizePhone(request.phone, request.smsConsent);
   return request;
+}
+
+function neededByDate_(value) {
+  var text = String(value || '').trim();
+  if (DEADLINES.indexOf(text) !== -1) return text;
+  var match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (!match) throw new Error('Choose a valid needed-by date.');
+  var date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  if (date.toISOString().slice(0, 10) !== text) throw new Error('Choose a valid needed-by date.');
+  return text;
 }
 
 function validateFiles_(files, machine) {
@@ -606,7 +621,7 @@ function validateReview(ticket, input) {
   const machine = str('machine', 10, true);
   if (!['printer','foam'].includes(machine)) workshopFail_('Choose a machine.');
   const neededBy = str('neededBy', 30, true);
-  if (!['Today','Tomorrow','This week','No rush'].includes(neededBy)) workshopFail_('Choose a requested deadline.');
+  neededByDate_(neededBy);
   const quantity = num('quantity',10000); if (!Number.isInteger(quantity)) workshopFail_('Quantity must be a whole number.');
   const paperType = machine === 'printer' ? str('paperType',50) : '';
   if (paperType && !['Polypropylene','Adhesive','Canvas','Glossy','Standard'].includes(paperType)) workshopFail_('Choose a paper material.');
