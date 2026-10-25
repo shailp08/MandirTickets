@@ -8,6 +8,10 @@ const labels = {
 };
 
 const ALLOWED_STATUSES = new Set(['pending-review', 'queued', 'in-progress']);
+const QUEUE_TYPES = [
+  ['printer', 'Poster printing'],
+  ['foam', 'Foam cutting'],
+];
 
 function getPositionText(t) {
   const status = String(t?.status || '').toLowerCase();
@@ -99,10 +103,27 @@ export default function QueueBoard({ apiBase, sheetsUrl, preview, recentTicket }
   const tickets = Array.isArray(selected?.tickets)
     ? selected.tickets.filter(t => ALLOWED_STATUSES.has(String(t?.status || '').toLowerCase()))
     : [];
+  const waitingCount = tickets.filter(t => String(t?.status || '').toLowerCase() === 'queued').length;
+  const inProgressCount = tickets.filter(t => String(t?.status || '').toLowerCase() === 'in-progress').length;
 
   const displayError = !data && (error.includes('positions shown below') || error.includes('Positions shown below'))
     ? 'Unable to load the workshop queue. Please check your connection and refresh.'
     : error;
+
+  const moveTabFocus = (event, currentId) => {
+    const currentIndex = QUEUE_TYPES.findIndex(([id]) => id === currentId);
+    let nextIndex = currentIndex;
+    if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % QUEUE_TYPES.length;
+    else if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + QUEUE_TYPES.length) % QUEUE_TYPES.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = QUEUE_TYPES.length - 1;
+    else return;
+
+    event.preventDefault();
+    const nextId = QUEUE_TYPES[nextIndex][0];
+    setMachine(nextId);
+    document.getElementById(`queue-tab-${nextId}`)?.focus();
+  };
 
   return (
     <section className="queue-board" id="queue" aria-labelledby="queue-title">
@@ -113,27 +134,35 @@ export default function QueueBoard({ apiBase, sheetsUrl, preview, recentTicket }
         </div>
         <button
           className="button button-secondary"
+          type="button"
           disabled={loading || preview}
           onClick={() => setRefresh(n => n + 1)}
         >
-          {loading ? 'Updating…' : 'Refresh queue'}
+          {loading ? 'Updating' : 'Refresh queue'}
         </button>
       </div>
-      <p>Requests awaiting karyakar approval appear as In Review. Only approved jobs receive a production queue position. Positions follow submission order, but staff may group jobs by material or adjust the working order. Positions count jobs, not people, and do not promise a completion time.</p>
-      <div className="queue-tabs" role="group" aria-label="Queue type">
-        {[
-          ['printer', 'Poster printing'],
-          ['foam', 'Foam cutting'],
-        ].map(([id, label]) => {
+      <p className="queue-intro">Choose a service to see tickets that are in review, waiting, or being made.</p>
+      <details className="queue-help">
+        <summary>How queue positions work</summary>
+        <p>Only approved jobs receive a position. Positions follow submission order, but staff may group jobs by material or adjust the working order. A position is not a promised completion time.</p>
+      </details>
+      <div className="queue-tabs" role="tablist" aria-label="Queue type">
+        {QUEUE_TYPES.map(([id, label]) => {
           const m = machines.find(item => item.id === id);
           const count = data && Array.isArray(data?.machines)
             ? (m?.waiting || 0) + (m?.inReview || 0)
-            : '—';
+            : 'Loading';
           return (
             <button
               key={id}
-              aria-pressed={machine === id}
+              type="button"
+              role="tab"
+              id={`queue-tab-${id}`}
+              aria-selected={machine === id}
+              aria-controls={`queue-panel-${id}`}
+              tabIndex={machine === id ? 0 : -1}
               onClick={() => setMachine(id)}
+              onKeyDown={event => moveTabFocus(event, id)}
             >
               {label} <span>{count}</span>
             </button>
@@ -142,42 +171,54 @@ export default function QueueBoard({ apiBase, sheetsUrl, preview, recentTicket }
       </div>
       {preview && <p className="notice">Connect the ticket service to see the live queue.</p>}
       {error && <p role="alert" className="notice error">{displayError}</p>}
-      {!data && !error && !preview && <p role="status">Loading the workshop queue…</p>}
+      {!data && !error && !preview && <p className="queue-loading" role="status">Loading the workshop queue</p>}
       {selected && (
-        <>
-          <p className="queue-summary">
-            <strong>{selected.waiting || 0}</strong> approved jobs · {selected.inReview || 0} in review
-          </p>
+        <div className="queue-panel" id={`queue-panel-${machine}`} role="tabpanel" aria-labelledby={`queue-tab-${machine}`} tabIndex="0">
+          <div className="queue-summary" aria-label="Queue totals">
+            <span><strong>{waitingCount}</strong> waiting</span>
+            <span><strong>{inProgressCount}</strong> being made</span>
+            <span><strong>{selected.inReview || 0}</strong> in review</span>
+          </div>
           {tickets.length === 0 ? (
             <p className="queue-empty">No requests in review, waiting, or being made in this queue.</p>
           ) : (
-            <ol className="public-queue">
-              {tickets.map((t, index) => {
-                const isYourTicket = Boolean(recentTicket?.ticketNumber) && Boolean(t?.ticketNumber) && t.ticketNumber === recentTicket.ticketNumber;
-                const status = String(t?.status || '').toLowerCase();
-                const statusLabel = labels[status] || t?.status || 'Waiting';
-                return (
-                  <li
-                    key={t?.ticketNumber || `ticket-${index}`}
-                    className={isYourTicket ? 'your-ticket' : ''}
-                  >
-                    <span className="queue-position">
-                      {typeof t?.position === 'number' && t.position > 0 ? t.position : '—'}
-                    </span>
-                    <strong className="queue-ticket-info">
-                      <span>{t?.ticketNumber || 'Ticket'}</span>
-                      <small className="queue-requester-name">
-                        {t?.customerName?.trim() || 'Requester name unavailable'}
-                      </small>
-                    </strong>
-                    <span>{statusLabel}</span>
-                    <span>{getPositionText(t)}</span>
-                  </li>
-                );
-              })}
-            </ol>
+            <div className="queue-table" role="table" aria-label={`${selected.name || 'Workshop'} queue`}>
+              <div className="queue-columns" role="row">
+                <span role="columnheader">Position</span>
+                <span role="columnheader">Ticket</span>
+                <span role="columnheader">Status</span>
+                <span role="columnheader">Progress</span>
+              </div>
+              <ol className="public-queue" role="rowgroup">
+                {tickets.map((t, index) => {
+                  const isYourTicket = Boolean(recentTicket?.ticketNumber) && Boolean(t?.ticketNumber) && t.ticketNumber === recentTicket.ticketNumber;
+                  const status = String(t?.status || '').toLowerCase();
+                  const statusLabel = labels[status] || t?.status || 'Waiting';
+                  return (
+                    <li
+                      key={t?.ticketNumber || `ticket-${index}`}
+                      className={isYourTicket ? 'your-ticket' : ''}
+                      role="row"
+                    >
+                      <span className="queue-position" role="cell">
+                        <small>Position</small>
+                        <strong>{typeof t?.position === 'number' && t.position > 0 ? t.position : 'Pending'}</strong>
+                      </span>
+                      <strong className="queue-ticket-info" role="cell">
+                        <span>{t?.ticketNumber || 'Ticket'}</span>
+                        <small className="queue-requester-name">
+                          {t?.customerName?.trim() || 'Requester name unavailable'}
+                        </small>
+                      </strong>
+                      <span className="queue-status" role="cell"><small>Status</small>{statusLabel}</span>
+                      <span className="queue-progress" role="cell"><small>Progress</small>{getPositionText(t)}</span>
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
           )}
-        </>
+        </div>
       )}
     </section>
   );

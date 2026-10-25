@@ -284,6 +284,37 @@ test('NAME BUG 2.4: whitespace customerName renders empty whitespace instead of 
   );
 });
 
+test('queue controls and rows expose clear accessible labels', () => {
+  const html = renderQueueBoardWithState({}, {
+    data: {
+      machines: [
+        {
+          id: 'printer',
+          name: 'Poster printing',
+          waiting: 2,
+          inReview: 1,
+          tickets: [
+            { ticketNumber: 'P-100', customerName: 'One', status: 'queued', position: 1 },
+            { ticketNumber: 'P-101', customerName: 'Two', status: 'in-progress', position: 2 },
+            { ticketNumber: 'P-102', customerName: 'Three', status: 'pending-review', position: null },
+          ],
+        },
+      ],
+    },
+  });
+
+  assert.match(html, /role="tablist"/);
+  assert.match(html, /role="tab"[^>]*aria-selected="true"/);
+  assert.match(html, /role="table"[^>]*aria-label="Poster printing queue"/);
+  for (const heading of ['Position', 'Ticket', 'Status', 'Progress']) {
+    assert.ok(html.includes(`role="columnheader">${heading}`), `Missing ${heading} queue heading`);
+  }
+  assert.ok(html.includes('<strong>1</strong> waiting'));
+  assert.ok(html.includes('<strong>1</strong> being made'));
+  assert.ok(html.includes('<strong>1</strong> in review'));
+  assert.ok(html.includes('<strong>Pending</strong>'));
+});
+
 // ---------------------------------------------------------------------------
 // 3. NETWORK & ERROR MESSAGE BUGS
 // ---------------------------------------------------------------------------

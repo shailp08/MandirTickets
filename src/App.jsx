@@ -31,14 +31,6 @@ const today = (() => {
   return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
 })();
 
-const STATUS_LABELS = { 'pending-review': 'In Review', declined: 'Declined',
-  queued: 'Waiting',
-  'in-progress': 'Being made',
-  ready: 'Ready for pickup',
-  collected: 'Picked up',
-  cancelled: 'Cancelled',
-};
-
 const machineName = ticket => MACHINES[ticket?.machine]
   || LEGACY_MACHINE_NAMES[ticket?.machineName]
   || ticket?.machineName
@@ -65,7 +57,10 @@ function Header() {
       <a className="brand" href={location.pathname} aria-label="Mandir workshop ticket home">
         <span><strong>Mandir</strong><small>Workshop tickets</small></span>
       </a>
-      <nav className="header-links" aria-label="Page navigation"><a className="header-note" href="#queue">View queue</a><a className="header-note" href="./staff/">Staff</a></nav>
+      <nav className="header-links" aria-label="Page navigation">
+        <a className="header-note header-queue-link" href="#queue">View queue</a>
+        <a className="header-note header-staff-link" href="./staff/">Staff</a>
+      </nav>
     </header>
   );
 }
@@ -75,13 +70,14 @@ function MachineChoice({ value, onChange }) {
     <section className="machine-step" aria-labelledby="ticket-question">
       <p className="eyebrow">Start a workshop ticket</p>
       <h1 id="ticket-question" tabIndex="-1">What do you need?</h1>
+      <p className="intro">Choose a service. We will guide you through the details and show you the live queue before you submit.</p>
       <div className="machine-choices" role="group" aria-label="Choose a ticket type">
-        <button className={value === 'printer' ? 'machine-choice selected' : 'machine-choice'} type="button" aria-labelledby="poster-printing-title" aria-describedby="poster-printing-description" onClick={() => onChange('printer')}>
+        <button className={value === 'printer' ? 'machine-choice selected' : 'machine-choice'} type="button" aria-pressed={value === 'printer'} aria-labelledby="poster-printing-title" aria-describedby="poster-printing-description" onClick={() => onChange('printer')}>
           <span className="choice-icon"><Printer size={34} weight="duotone" aria-hidden="true" /></span>
           <span className="choice-copy"><strong id="poster-printing-title">Poster printing</strong><small id="poster-printing-description">Posters, signs, stickers, and canvas up to 24 inches wide.</small></span>
           <span className="choice-select" aria-hidden="true">Start <ArrowRight weight="bold" /></span>
         </button>
-        <button className={value === 'foam' ? 'machine-choice selected' : 'machine-choice'} type="button" aria-labelledby="foam-cutting-title" aria-describedby="foam-cutting-description" onClick={() => onChange('foam')}>
+        <button className={value === 'foam' ? 'machine-choice selected' : 'machine-choice'} type="button" aria-pressed={value === 'foam'} aria-labelledby="foam-cutting-title" aria-describedby="foam-cutting-description" onClick={() => onChange('foam')}>
           <span className="choice-icon"><Scissors size={34} weight="duotone" aria-hidden="true" /></span>
           <span className="choice-copy"><strong id="foam-cutting-title">Foam cutting</strong><small id="foam-cutting-description">Foam letters, shapes, signs, and display pieces.</small></span>
           <span className="choice-select" aria-hidden="true">Start <ArrowRight weight="bold" /></span>
@@ -93,6 +89,7 @@ function MachineChoice({ value, onChange }) {
 
 function TicketForm({ machine, onChangeMachine, onTicket }) {
   const formRef = useRef(null);
+  const noticeRef = useRef(null);
   const requestKey = useRef(createRequestKey());
   const startedAt = useRef(Date.now());
   const [files, setFiles] = useState([]);
@@ -101,6 +98,11 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
   const [notice, setNotice] = useState({ text: '', error: false });
   const [canRetry, setCanRetry] = useState(false);
   const [ticket, setTicket] = useState(null);
+
+  const showNotice = (text, error = true) => {
+    setNotice({ text, error });
+    window.setTimeout(() => noticeRef.current?.focus(), 0);
+  };
 
   useEffect(() => {
     const warn = event => {
@@ -114,15 +116,27 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
   }, [submitting]);
 
   const addFiles = incoming => {
-    const nextFiles = [...files, ...Array.from(incoming)];
+    const incomingFiles = Array.from(incoming);
+    const knownFiles = new Set(files.map(file => `${file.name}:${file.size}:${file.lastModified}`));
+    const uniqueFiles = incomingFiles.filter(file => !knownFiles.has(`${file.name}:${file.size}:${file.lastModified}`));
+
+    if (incomingFiles.length > 0 && uniqueFiles.length === 0) {
+      showNotice('That file is already attached. Choose a different file or remove the existing copy first.');
+      return;
+    }
+
+    const nextFiles = [...files, ...uniqueFiles];
     try {
       validateFileTypes(nextFiles, machine);
       if (SHEETS_API_URL) validateSheetsFiles(nextFiles, machine);
       setFiles(nextFiles);
-      setNotice({ text: '', error: false });
+      setNotice({
+        text: uniqueFiles.length < incomingFiles.length ? 'Duplicate files were skipped.' : '',
+        error: false,
+      });
       setCanRetry(false);
     } catch (error) {
-      setNotice({ text: error.message, error: true });
+      showNotice(error.message);
     }
   };
 
@@ -149,11 +163,11 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
     event.preventDefault();
     if (submitting || !formRef.current.reportValidity()) return;
     if (machine === 'printer' && files.length === 0) {
-      setNotice({ text: 'Add at least one file for a print ticket.', error: true });
+      showNotice('Add at least one PDF or JPG file for a print ticket.');
       return;
     }
     if (staticPreview) {
-      setNotice({ text: 'The hosted ticket API has not been connected yet. Use the local workshop site to submit this request.', error: true });
+      showNotice('The hosted ticket service is not connected. Use the local workshop site to submit this request.');
       return;
     }
     const data = new FormData(formRef.current);
@@ -183,7 +197,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
       setNotice({ text: '', error: false });
       window.setTimeout(() => document.getElementById('ticket-receipt')?.focus(), 0);
     } catch (error) {
-      setNotice({ text: error.message, error: true });
+      showNotice(error.message);
       setCanRetry(true);
     } finally {
       setSubmitting(false);
@@ -256,7 +270,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
           <label className="upload-label">Artwork files <span>{machine === 'printer' ? 'Required' : 'Optional'}</span></label>
           <div className="dropzone" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
             <UploadSimple size={30} weight="duotone" aria-hidden="true" />
-            <strong>Add files or drop them here</strong>
+            <strong>Choose files or drop them here</strong>
             <small>{machine === 'printer' ? 'PDF or JPG' : 'SVG or DXF'} · up to 200 MB total</small>
             <input type="file" name="files" accept={machine === 'printer' ? '.pdf,.jpg,.jpeg' : '.svg,.dxf'} multiple onChange={event => { addFiles(event.target.files); event.target.value = ''; }} aria-label="Upload artwork files" />
           </div>
@@ -280,7 +294,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
           <button className="button button-primary submit-button" type="submit" disabled={submitting}>{submitting ? 'Submitting ticket' : canRetry ? 'Try again' : 'Submit ticket'} <ArrowRight weight="bold" aria-hidden="true" /></button>
         </div>
         {submitting && <progress max="100" value={progress} aria-label={`Upload progress: ${progress}%`} />}
-        {notice.text && <p className={notice.error ? 'notice error' : 'notice'} role={notice.error ? 'alert' : 'status'}>{notice.text}</p>}
+        {notice.text && <p ref={noticeRef} id="ticket-form-notice" className={notice.error ? 'notice error' : 'notice'} role={notice.error ? 'alert' : 'status'} tabIndex="-1">{notice.text}</p>}
       </form>
     </section>
   );
