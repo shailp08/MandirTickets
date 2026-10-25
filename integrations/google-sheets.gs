@@ -606,6 +606,12 @@ function notificationEvent(ticket, status, reason = '') {
   if (!['ready', 'cancelled', 'declined'].includes(status) || !ticket.smsConsent) return {};
   return { notification: { phone: ticket.phone, ticketNumber: ticket.ticketNumber, status, reason } };
 }
+function machineId_(value) {
+  var name = String(value || '').trim().toLowerCase();
+  if (['printer', MACHINES.printer.toLowerCase(), '24-inch roll printer', 'hp designjet t210 · 24-inch', 'hp designjet t210 · 24-inch printer'].indexOf(name) !== -1) return 'printer';
+  if (['foam', MACHINES.foam.toLowerCase(), 'foam cutting machine', '2525 hot-wire machine', '2525 hot-wire foam cutter'].indexOf(name) !== -1) return 'foam';
+  return '';
+}
 // Review edits are explicit: no client-controlled identifiers, timestamps, or stored paths.
 function validateReview(ticket, input) {
   if (!input || !['save', 'approve', 'decline'].includes(input.decision)) workshopFail_('Choose a review action.');
@@ -653,7 +659,7 @@ function validateReview(ticket, input) {
 }
 
 function staffTicket_(row) {
-  var machine = Object.keys(MACHINES).find(function(id) { return MACHINES[id] === String(row[2]) || id === String(row[2]); });
+  var machine = machineId_(row[2]);
   var date = function(v) { return v instanceof Date ? v.toISOString() : String(v || ''); };
   var parsed = function(v) { if (!v) return []; var result = JSON.parse(String(v)); if (!Array.isArray(result)) throw new Error('Invalid staff record.'); return result; };
   return { id: String(row[0]), ticketNumber: String(row[1]), sequence: Number(String(row[1]).slice(2)), machine: machine,

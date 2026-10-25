@@ -59,7 +59,7 @@ function googleHarness() {
   ctx.ensureTicketSheet_=()=>({getLastRow:()=>rows.length+1,getRange:(r,c,n=1,w=1)=>({getValues:()=>rows.slice(r-2,r-2+n).map(row=>row.slice(c-1,c-1+w)),setValues:values=>{values.forEach((v,i)=>rows[r-2+i]=v);}})});
   const make=(id,num,machine,created)=>[id,num,machine,'Private Name','Events','Secret design','Private phone',1,'Glossy',24,36,2,'Today','queued','Private notes','poster.pdf: https://drive.google.com/file/d/abcdefghijklmnop/view',created,created,1,'SECRET12','private-key','GitHub Pages','','','','','','[]','[]','',''];
   // Physical row order is reversed, as happens when staff sort the Sheet.
-  rows=[make('b','F-0002','Foam cutting','2026-10-22T10:01:00Z'),make('a','F-0001','Foam cutting','2026-10-22T10:00:00Z'),make('p','P-0001','Poster printing','2026-10-22T10:00:00Z')];
+  rows=[make('b','F-0002','Foam cutting','2026-10-22T10:01:00Z'),make('a','F-0001','Foam cutting machine','2026-10-22T10:00:00Z'),make('p','P-0001','24-inch roll printer','2026-10-22T10:00:00Z')];
   const call=(action,body={},secret='s'.repeat(32))=>ctx.doPost({postData:{contents:JSON.stringify({action,secret,...body})}});
   return {ctx,call,getRows:()=>rows};
 }
@@ -69,6 +69,8 @@ test('Google staff operations authenticate, allow flexible order, save usage onc
   const publicList=ctx.doPost({postData:{contents:JSON.stringify({action:'staffList',publicStaff:true})}});
   assert.equal(publicList.ok,true); assert.equal(publicList.tickets.length,3);
   const list=call('staffList'); assert.equal(list.tickets.length,3);
+  assert.equal(list.tickets.find(ticket=>ticket.id==='a').machine,'foam');
+  assert.equal(list.tickets.find(ticket=>ticket.id==='p').machine,'printer');
   assert.equal(list.tickets[0].files[0].url,'https://drive.google.com/file/d/abcdefghijklmnop/view');
   assert.equal(call('staffUpdate',{id:'b',status:'in-progress',expectedRevision:1}).ok,true);
   assert.equal(call('staffUpdate',{id:'a',status:'in-progress',expectedRevision:1}).ok,true);
