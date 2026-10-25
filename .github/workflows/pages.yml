@@ -17,6 +17,8 @@ concurrency:
 jobs:
   verify-and-build:
     runs-on: ubuntu-latest
+    env:
+      VITE_GOOGLE_SCRIPT_URL: ${{ vars.VITE_GOOGLE_SCRIPT_URL }}
     steps:
       - name: Check out source
         uses: actions/checkout@v7
