@@ -26,10 +26,6 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, ''
 const SHEETS_API_URL = (import.meta.env.VITE_GOOGLE_SCRIPT_URL || import.meta.env.WORKSHOP_GOOGLE_SCRIPT_URL || '').replace(/\/$/, '');
 const apiUrl = path => `${API_BASE_URL}${path}`;
 const staticPreview = location.hostname.endsWith('.github.io') && !API_BASE_URL && !SHEETS_API_URL;
-const today = (() => {
-  const value = new Date();
-  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
-})();
 
 const machineName = ticket => MACHINES[ticket?.machine]
   || LEGACY_MACHINE_NAMES[ticket?.machineName]
@@ -87,7 +83,7 @@ function MachineChoice({ value, onChange }) {
   );
 }
 
-function TicketForm({ machine, onChangeMachine, onTicket }) {
+export function TicketForm({ machine, onChangeMachine, onTicket }) {
   const formRef = useRef(null);
   const noticeRef = useRef(null);
   const requestKey = useRef(createRequestKey());
@@ -253,7 +249,6 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
             <label>Name <span>Required</span><input name="customerName" autoComplete="name" required maxLength="100" placeholder="Your name" /></label>
             <label>Department <span>Required</span><input name="department" required maxLength="100" placeholder="Decorations, Events, Youth" /></label>
             <label className="field-full">What is this for? <span>Required</span><textarea name="purpose" required maxLength="2000" rows="4" placeholder="Tell us about the event or project." /></label>
-            <label className="date-field">Needed by <span>Required</span><input name="neededBy" type="date" min={today} required /></label>
           </div>
         </fieldset>
 

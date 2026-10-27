@@ -457,8 +457,7 @@ form {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.field-full,
-.date-field {
+.field-full {
   grid-column: 1 / -1;
 }
 
@@ -1001,10 +1000,6 @@ footer strong {
   .field-grid,
   .details-grid {
     grid-template-columns: 1fr;
-  }
-
-  .date-field {
-    grid-column: auto;
   }
 
   .machine-choice {

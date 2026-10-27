@@ -29,11 +29,12 @@ test('concurrent requests keep every ticket and assign independent, persistent q
   assert.equal((await restored.create(print,'print')).ticket.ticketNumber,'P-0001');
 });
 test('validates department, purpose, printer width, quantity and required print files',()=>{
-  for(const patch of [{department:''},{purpose:''},{width:'-1'},{quantity:'1.5'},{thickness:'0'},{neededBy:'Invalid'},{neededBy:'2099-02-29'}]) assert.throws(()=>validateTicket({...input,...patch},[]));
+  for(const patch of [{department:''},{purpose:''},{width:'-1'},{quantity:'1.5'},{thickness:'0'},{neededBy:'Invalid'},{neededBy:'2099-02-29'},{neededBy:false}]) assert.throws(()=>validateTicket({...input,...patch},[]));
   assert.throws(()=>validateTicket({...input,machine:'printer',paperType:'Standard',width:'25'},[{originalName:'a.pdf'}]));
   assert.throws(()=>validateTicket({...input,machine:'printer',paperType:'Standard'},[]));
   assert.equal(validateTicket(input,[]).machine,'foam');
   assert.equal(validateTicket({...input,neededBy:'Today'},[]).neededBy,'Today');
+  assert.equal(validateTicket({...input,neededBy:undefined},[]).neededBy,'No rush');
 });
 test('validates file formats for each machine',()=>{
   assert.throws(()=>validateTicket({...input,machine:'printer'},[{originalName:'cut.svg'}]),/PDF or JPG/i);

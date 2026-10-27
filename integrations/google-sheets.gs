@@ -250,7 +250,7 @@ function validatePublicTicket_(input) {
     quantity: positiveNumber_(input.quantity, 'Quantity', 10000, true),
     width: positiveNumber_(input.width, 'Width', machine === 'printer' ? 24 : 10000, false),
     length: positiveNumber_(input.length, 'Length', 100000, false),
-    neededBy: neededByDate_(input.neededByDate || input.neededBy),
+    neededBy: neededByDate_(input.neededByDate || (input.neededBy === undefined ? 'No rush' : input.neededBy)),
     paperType: '',
     thickness: '',
     files: validateFiles_(input.files || [], machine)

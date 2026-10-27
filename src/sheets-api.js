@@ -333,9 +333,13 @@ async function uploadFiles(url, details, files, onProgress) {
 }
 
 export async function createSheetsTicket(url, details, files, onProgress) {
-  validateNeededByDate(details.neededBy);
-  const compatibleNotes = legacySheetsNotes(details.notes, details.neededBy);
-  const uploadedFiles = await uploadFiles(url, details, files, onProgress);
+  const normalizedDetails = { ...details, neededBy: details.neededBy === undefined ? 'No rush' : details.neededBy };
+  const hasRequestedDate = normalizedDetails.neededBy !== 'No rush';
+  if (hasRequestedDate) validateNeededByDate(normalizedDetails.neededBy);
+  const compatibleNotes = hasRequestedDate
+    ? legacySheetsNotes(normalizedDetails.notes, normalizedDetails.neededBy)
+    : String(normalizedDetails.notes || '');
+  const uploadedFiles = await uploadFiles(url, normalizedDetails, files, onProgress);
   onProgress?.(92);
   await fetch(url, {
     method: 'POST',
@@ -344,9 +348,11 @@ export async function createSheetsTicket(url, details, files, onProgress) {
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify({
       action: 'createTicket',
-      ...details,
-      neededByDate: details.neededBy,
-      neededBy: legacySheetsDeadline(details.neededBy),
+      ...normalizedDetails,
+      ...(hasRequestedDate ? {
+        neededByDate: normalizedDetails.neededBy,
+        neededBy: legacySheetsDeadline(normalizedDetails.neededBy),
+      } : {}),
       notes: compatibleNotes,
       files: uploadedFiles,
     }),
@@ -355,9 +361,9 @@ export async function createSheetsTicket(url, details, files, onProgress) {
   let lastError;
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
-      const ticket = await trackSheetsTicket(url, { requestKey: details.requestKey });
+      const ticket = await trackSheetsTicket(url, { requestKey: normalizedDetails.requestKey });
       onProgress?.(100);
-      uploadedFilesByRequest.delete(details.requestKey);
+      uploadedFilesByRequest.delete(normalizedDetails.requestKey);
       return ticket;
     } catch (error) {
       lastError = error;

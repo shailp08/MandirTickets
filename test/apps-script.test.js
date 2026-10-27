@@ -59,6 +59,8 @@ test('Apps Script backend accepts calendar deadlines and removes the legacy note
   const ticket = context.validatePublicTicket_({ ...baseTicket(), neededByDate: '2099-12-31', notes: 'Needed by date: 2099-12-31\nBlue logo' });
   assert.equal(ticket.neededBy, '2099-12-31');
   assert.equal(ticket.notes, 'Blue logo');
+  assert.equal(context.validatePublicTicket_({ ...baseTicket(), neededBy: undefined }).neededBy, 'No rush');
+  assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), neededBy: false }), /needed-by date/i);
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), neededByDate: '2099-02-29' }), /valid needed-by date/i);
 });
 

@@ -450,3 +450,24 @@ test('ticket creation preserves file identity metadata from selection through th
     md5Checksum: 'abcdef0123456789abcdef0123456789',
   }]);
 });
+
+test('ticket creation defaults to no rush when the customer form has no needed-by field', async () => {
+  let posted;
+  await withBrowserPipeline({
+    jsonp: () => ({ ok: true, ticket: { ticketNumber: 'F-0045', trackingCode: 'DEFG5678', status: 'pending-review' } }),
+    onPost: body => { posted = body; },
+  }, async () => {
+    const details = {
+      ...requestDetails('44444444444444444444444444444444'),
+      machine: 'foam',
+      thickness: '2',
+      notes: 'Use the blue foam.',
+    };
+    delete details.neededBy;
+    await createSheetsTicket('https://script.example/exec', details, []);
+  });
+
+  assert.equal(posted.neededBy, 'No rush');
+  assert.equal(Object.hasOwn(posted, 'neededByDate'), false);
+  assert.equal(posted.notes, 'Use the blue foam.');
+});
