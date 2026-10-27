@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   createSheetsTicket,
   driveNextOffset,
+  fetchSheetsQueue,
   legacySheetsDeadline,
   legacySheetsNotes,
   retrySheetsTransport,
@@ -13,6 +14,7 @@ import {
   SHEETS_MAX_FILE_BYTES,
   SHEETS_MAX_FILES,
   SHEETS_MAX_TOTAL_BYTES,
+  SHEETS_MAX_VECTOR_FILE_BYTES,
 } from '../src/sheets-api.js';
 
 const file = (name, size = 1024) => ({ name, size });
@@ -62,14 +64,20 @@ async function withBrowserPipeline({ jsonp, xhr = [], onPost = () => {} }, opera
       const response = xhr.shift();
       assert.ok(response, `Unexpected upload request to ${this.url}`);
       uploads.push({ method: this.method, url: this.url, headers: { ...this.headers }, body });
-      this.upload.onprogress?.({ loaded: body.size });
+      this.upload.onprogress?.({ loaded: body?.size || 0 });
       if (response.error) {
         this.onerror();
         return;
       }
+      this.responseHeaders = response.headers || {};
       this.status = response.status;
       this.responseText = response.body === undefined ? '' : JSON.stringify(response.body);
       this.onload();
+    }
+
+    getResponseHeader(name) {
+      const match = Object.keys(this.responseHeaders || {}).find(key => key.toLowerCase() === name.toLowerCase());
+      return match ? this.responseHeaders[match] : null;
     }
   }
 
@@ -90,7 +98,7 @@ async function withBrowserPipeline({ jsonp, xhr = [], onPost = () => {} }, opera
         const url = new URL(script.src);
         const parameters = Object.fromEntries(url.searchParams);
         const response = jsonp(parameters);
-        queueMicrotask(() => globalThis.window[parameters.callback](response));
+        queueMicrotask(() => response?.transportError ? script.onerror() : globalThis.window[parameters.callback](response));
       },
     },
   };
@@ -122,6 +130,7 @@ test('Google Sheets client enforces count, extension, per-file, and total limits
   assert.throws(() => validateSheetsFiles(Array.from({ length: SHEETS_MAX_FILES + 1 }, (_, index) => file(`${index}.pdf`)), 'printer'), /no more than/i);
   assert.throws(() => validateSheetsFiles([file('installer.exe')], 'printer'), /PDF or JPG/i);
   assert.throws(() => validateSheetsFiles([file('oversize.pdf', SHEETS_MAX_FILE_BYTES + 1)], 'printer'), /200 MB/i);
+  assert.throws(() => validateSheetsFiles([file('oversize.svg', SHEETS_MAX_VECTOR_FILE_BYTES + 1)], 'foam'), /10 MB/i);
   assert.throws(() => validateSheetsFiles([file('one.pdf', SHEETS_MAX_TOTAL_BYTES), file('two.pdf', 1)], 'printer'), /200 MB/i);
 });
 
@@ -163,6 +172,20 @@ test('Google Sheets client stops retrying after the final transport failure', as
     /still offline/,
   );
   assert.equal(calls, 3);
+});
+
+test('live queue uses a short retry budget and recovers from one transport failure', async () => {
+  let calls = 0;
+  const result = await withBrowserPipeline({
+    jsonp(parameters) {
+      assert.equal(parameters.action, 'queue');
+      calls++;
+      return calls === 1 ? { transportError: true } : { ok: true, machines: [] };
+    },
+  }, () => fetchSheetsQueue('https://script.example/exec', { timeout: 10000, attempts: 2, pause: async () => {} }));
+
+  assert.equal(calls, 2);
+  assert.deepEqual(result.machines, []);
 });
 
 test('Google Sheets client uses a longer default retry window', async () => {
@@ -224,11 +247,81 @@ test('completed Drive receipts are reused when ticket confirmation must be retri
   });
 });
 
+test('a changed retry cannot reuse a request key after an uncertain submission', async () => {
+  const makeArtwork = marker => ({
+    marker,
+    name: 'poster.pdf',
+    size: 4096,
+    type: 'application/pdf',
+    lastModified: 1770000000000,
+    slice: (start, end) => ({ marker, size: end - start }),
+  });
+  const firstArtwork = makeArtwork('first');
+  const replacementArtwork = makeArtwork('replacement');
+  let beginUploads = 0;
+  let trackCalls = 0;
+
+  await withBrowserPipeline({
+    jsonp(parameters) {
+      if (parameters.action === 'beginUpload') {
+        beginUploads++;
+        return { ok: true, sessionUrl: `https://www.googleapis.com/upload/session-${beginUploads}` };
+      }
+      trackCalls++;
+      return { ok: false, error: 'The ticket is still being saved.' };
+    },
+    xhr: [
+      { status: 200, body: { id: 'drive_file_first', md5Checksum: '0123456789abcdef0123456789abcdef' } },
+    ],
+  }, async ({ uploads }) => {
+    const details = requestDetails('22222222222222222222222222222222');
+    await assert.rejects(createSheetsTicket('https://script.example/exec', details, [firstArtwork]), /without uploading the files again/i);
+    await assert.rejects(createSheetsTicket('https://script.example/exec', details, [replacementArtwork]), /different details or files/i);
+    await assert.rejects(createSheetsTicket('https://script.example/exec', { ...details, purpose: 'Changed purpose' }, [firstArtwork]), /different details or files/i);
+
+    assert.equal(beginUploads, 1);
+    assert.equal(uploads.length, 1);
+    assert.equal(uploads[0].body.marker, 'first');
+  });
+});
+
 test('Drive range parsing uses only confirmed resumable-upload offsets', () => {
   assert.equal(driveNextOffset('bytes=0-10485759', 0), 10485760);
   assert.equal(driveNextOffset('bytes=0-0', 12), 1);
   assert.equal(driveNextOffset('bytes=5-10', 12), 12);
   assert.equal(driveNextOffset('garbage', 12), 12);
+});
+
+test('an ambiguous 308 response queries Drive instead of skipping an unconfirmed chunk', async () => {
+  const mebibyte = 1024 * 1024;
+  const size = 15 * mebibyte;
+  const artwork = {
+    name: 'poster.pdf',
+    size,
+    type: 'application/pdf',
+    slice: (start, end) => ({ size: end - start }),
+  };
+
+  await withBrowserPipeline({
+    jsonp: () => ({ ok: true }),
+    xhr: [
+      { status: 308 },
+      { status: 308, headers: {} },
+      { status: 308, headers: { Range: `bytes=0-${5 * mebibyte - 1}` } },
+      { status: 308, headers: { Range: `bytes=0-${15 * mebibyte - 1}` } },
+      { status: 200, body: { id: 'drive_file_complete', md5Checksum: '0123456789abcdef0123456789abcdef' } },
+    ],
+  }, async ({ uploads }) => {
+    const receipt = await uploadDriveFile('https://www.googleapis.com/upload/ambiguous-session', artwork, () => {});
+    assert.equal(receipt.id, 'drive_file_complete');
+    assert.deepEqual(uploads.map(request => request.headers['Content-Range']), [
+      `bytes 0-${10 * mebibyte - 1}/${size}`,
+      `bytes */${size}`,
+      `bytes 0-${10 * mebibyte - 1}/${size}`,
+      `bytes ${5 * mebibyte}-${15 * mebibyte - 1}/${size}`,
+      `bytes */${size}`,
+    ]);
+  });
 });
 
 test('an interrupted Drive upload resumes at the server-confirmed offset without resending bytes', async () => {

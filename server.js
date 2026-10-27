@@ -31,6 +31,7 @@ function positiveInteger(value, fallback, name) {
 }
 const maxUploadBytes = positiveInteger(process.env.MAX_UPLOAD_BYTES, 200 * 1024 * 1024, 'MAX_UPLOAD_BYTES');
 const maxUploadFiles = positiveInteger(process.env.MAX_UPLOAD_FILES, 10, 'MAX_UPLOAD_FILES');
+const maxUploadTotalBytes = positiveInteger(process.env.MAX_UPLOAD_TOTAL_BYTES, 200 * 1024 * 1024, 'MAX_UPLOAD_TOTAL_BYTES');
 if (production && ((!googleMode && !scanner) || !appOrigin?.startsWith('https://') || process.env.COOKIE_SECURE !== 'true' || !process.env.ADMIN_PASSWORD)) {
   throw new Error('Production requires CLAMSCAN_PATH for local uploads, an HTTPS APP_ORIGIN, COOKIE_SECURE=true, and a configured ADMIN_PASSWORD.');
 }
@@ -43,7 +44,7 @@ const sheets = createSheetsSync(store, { url: process.env.SHEETS_WEBHOOK_URL, se
 const googleWorkshop = process.env.WORKSHOP_GOOGLE_SCRIPT_URL ? createGoogleWorkshop({ url: process.env.WORKSHOP_GOOGLE_SCRIPT_URL, secret: process.env.WORKSHOP_SHARED_SECRET }) : null;
 if (googleWorkshop && process.env.SHEETS_WEBHOOK_URL) throw new Error('Use Google as the source of truth OR a local mirror, never both.');
 const notifications = await createNotifications({directory:dataDir,apiKey:process.env.TEXTBEE_API_KEY,deviceId:process.env.TEXTBEE_DEVICE_ID});
-const workshop = googleWorkshop || { review: (...args) => store.review(...args), list: async () => store.list(), update: (id, status, revision, reason) => store.update(id, status, revision, true, reason), recordUsage: (...args) => store.recordUsage(...args) };
+const workshop = googleWorkshop || { review: (...args) => store.review(...args), list: async () => store.list(), queue: async () => ({ machines: publicQueue(store.list()), updatedAt: new Date().toISOString() }), update: (id, status, revision, reason) => store.update(id, status, revision, true, reason), recordUsage: (...args) => store.recordUsage(...args) };
 const app = express();
 app.disable('x-powered-by');
 app.use((req, res, next) => {
@@ -118,8 +119,8 @@ app.post('/api/session', (req, res) => {
 app.delete('/api/session', (req, res) => { sessions.delete(sessionToken(req)); res.clearCookie('desk_session', sessionCookie(req)); res.json({ ok: true }); });
 app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 app.get('/api/config', (_req, res) => res.json({ machines, paperTypes: papers, turnaroundOptions: deadlines, statuses,
-  uploads: { maxFiles: maxUploadFiles, maxFileBytes: maxUploadBytes } }));
-app.get('/api/queue', async (_req, res) => res.json({ machines: publicQueue(await workshop.list()), updatedAt: new Date().toISOString() }));
+  uploads: { maxFiles: maxUploadFiles, maxFileBytes: maxUploadBytes, maxTotalBytes: maxUploadTotalBytes } }));
+app.get('/api/queue', async (_req, res) => res.json(await workshop.queue()));
 app.get('/api/track/:number', async (req, res) => {
   const records = await workshop.list();
   const ticket = records.find(t => t.ticketNumber.toUpperCase() === req.params.number.toUpperCase());
@@ -158,6 +159,8 @@ app.post('/api/tickets', (req, res, next) => {
   let committed = false;
   try {
     const key = req.get('idempotency-key');
+    const totalBytes = (req.files || []).reduce((total, file) => total + file.size, 0);
+    if (totalBytes > maxUploadTotalBytes) fail(`Attachments must total no more than ${Math.ceil(maxUploadTotalBytes / 1024 / 1024)} MB.`);
     const files = [];
     for (const file of req.files || []) files.push(await validateUpload(file, { scanner, requireScanner: production }));
     const details = validateTicket(req.body, files);

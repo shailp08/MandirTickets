@@ -1,6 +1,7 @@
 export const SHEETS_MAX_FILES = 5;
 export const SHEETS_MAX_FILE_BYTES = 200 * 1024 * 1024;
 export const SHEETS_MAX_TOTAL_BYTES = 200 * 1024 * 1024;
+export const SHEETS_MAX_VECTOR_FILE_BYTES = 10 * 1024 * 1024;
 
 const DRIVE_CHUNK_BYTES = 10 * 1024 * 1024;
 const DRIVE_MAX_RECOVERY_ATTEMPTS = 5;
@@ -50,15 +51,25 @@ export function validateFileTypes(files, machine) {
   }
 }
 
-export function validateSheetsFiles(files, machine) {
-  if (files.length > SHEETS_MAX_FILES) throw new Error(`Attach no more than ${SHEETS_MAX_FILES} files.`);
+export function validateFileSelection(files, machine) {
   validateFileTypes(files, machine);
   let total = 0;
   for (const file of files) {
-    if (file.size < 1 || file.size > SHEETS_MAX_FILE_BYTES) throw new Error('Each file must be 200 MB or smaller.');
+    if (file.size < 1) throw new Error('Empty files cannot be submitted.');
+    if (/\.(?:svg|dxf)$/i.test(file.name) && file.size > SHEETS_MAX_VECTOR_FILE_BYTES) {
+      throw new Error('SVG and DXF files must be 10 MB or smaller so their full contents can be checked.');
+    }
     total += file.size;
   }
   if (total > SHEETS_MAX_TOTAL_BYTES) throw new Error('Attachments must total 200 MB or less.');
+}
+
+export function validateSheetsFiles(files, machine) {
+  if (files.length > SHEETS_MAX_FILES) throw new Error(`Attach no more than ${SHEETS_MAX_FILES} files.`);
+  validateFileSelection(files, machine);
+  for (const file of files) {
+    if (file.size > SHEETS_MAX_FILE_BYTES) throw new Error('Each file must be 200 MB or smaller.');
+  }
 }
 
 function sheetsJsonpAttempt(url, parameters, timeout) {
@@ -102,6 +113,21 @@ export async function sheetsJsonp(url, parameters, timeout = 15000) {
   }
 }
 
+export async function fetchSheetsQueue(url, {
+  timeout = 5000,
+  attempts = 2,
+  pause = wait,
+} = {}) {
+  try {
+    return await retrySheetsTransport(
+      () => sheetsJsonpAttempt(url, { action: 'queue' }, timeout),
+      { attempts, pause },
+    );
+  } catch (cause) {
+    throw new Error('The live queue is taking too long to respond.', { cause });
+  }
+}
+
 export async function trackSheetsTicket(url, { ticket, code, requestKey } = {}) {
   const response = await sheetsJsonp(url, {
     action: 'track',
@@ -137,7 +163,12 @@ function putDriveChunk(sessionUrl, file, start, end, onProgress) {
     xhr.onabort = () => reject(driveRequestError('The file upload was interrupted.', true));
     xhr.onload = () => {
       if (xhr.status === 308) {
-        resolve({ nextOffset: driveNextOffset(xhr.getResponseHeader('Range'), end) });
+        const nextOffset = driveNextOffset(xhr.getResponseHeader('Range'), -1);
+        if (nextOffset < 0) {
+          reject(driveRequestError('Google Drive did not confirm the uploaded byte range.', true));
+          return;
+        }
+        resolve({ nextOffset });
         return;
       }
       if (xhr.status < 200 || xhr.status >= 300) {
@@ -231,10 +262,32 @@ export async function uploadDriveFile(sessionUrl, file, onProgress, {
 
 async function uploadFiles(url, details, files, onProgress) {
   validateSheetsFiles(files, details.machine);
-  const fingerprint = JSON.stringify(files.map(file => [file.name, file.size, file.type || '', file.lastModified || 0]));
+  const fingerprint = JSON.stringify({
+    details: {
+      machine: details.machine,
+      customerName: details.customerName,
+      department: details.department,
+      purpose: details.purpose,
+      phone: details.phone,
+      smsConsent: details.smsConsent,
+      notes: details.notes,
+      quantity: details.quantity,
+      width: details.width,
+      length: details.length,
+      thickness: details.thickness,
+      neededBy: details.neededBy,
+      paperType: details.paperType,
+      website: details.website,
+    },
+    files: files.map(file => [file.name, file.size, file.type || '', file.lastModified || 0]),
+  });
   let cached = uploadedFilesByRequest.get(details.requestKey);
-  if (!cached || cached.fingerprint !== fingerprint) {
-    cached = { fingerprint, uploaded: [] };
+  const sameFiles = cached?.files?.length === files.length && cached.files.every((file, index) => file === files[index]);
+  if (cached && (cached.fingerprint !== fingerprint || !sameFiles)) {
+    throw new Error('This retry has different details or files. Reload the form to start a new request instead of changing an upload that may already have been saved.');
+  }
+  if (!cached) {
+    cached = { fingerprint, files: files.slice(), uploaded: [] };
     uploadedFilesByRequest.set(details.requestKey, cached);
   }
   const totalBytes = files.reduce((sum, file) => sum + file.size, 0);

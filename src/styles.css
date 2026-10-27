@@ -38,7 +38,10 @@ html {
 body {
   min-width: 320px;
   margin: 0;
-  background: var(--cream);
+  background:
+    radial-gradient(circle at 8% 4%, rgba(240, 165, 26, 0.08), transparent 24rem),
+    radial-gradient(circle at 94% 18%, rgba(29, 58, 41, 0.07), transparent 28rem),
+    var(--cream);
   color: var(--ink);
 }
 
@@ -121,15 +124,15 @@ p {
   z-index: 10;
   top: 22px;
   left: 50%;
-  width: min(1160px, calc(100% - 40px));
-  min-height: 70px;
+  width: min(1180px, calc(100% - 40px));
+  min-height: 72px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  padding: 11px 18px 11px 12px;
+  padding: 12px 20px;
   border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 19px;
+  border-radius: 22px;
   background: rgba(18, 39, 27, 0.96);
   color: white;
   box-shadow: 0 18px 48px rgba(18, 39, 27, 0.2);
@@ -216,14 +219,14 @@ p {
 }
 
 main {
-  width: min(1060px, calc(100% - 40px));
+  width: min(1120px, calc(100% - 40px));
   min-height: calc(100vh - 100px);
   margin: 0 auto;
-  padding: 150px 0 110px;
+  padding: 148px 0 110px;
 }
 
 .machine-step {
-  max-width: 980px;
+  max-width: 1040px;
   margin: 0 auto;
 }
 
@@ -257,39 +260,36 @@ h1 {
 .machine-choices {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px;
+  gap: 20px;
 }
 
 .machine-choice {
-  --ticket-cut: 14px;
-  min-height: 230px;
+  position: relative;
+  min-height: 218px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  padding: 24px;
+  padding: 27px;
   border: 1px solid var(--line);
-  border-radius: 0;
-  background: rgba(255, 253, 248, 0.78);
+  border-radius: 22px;
+  overflow: hidden;
+  background: rgba(255, 253, 248, 0.9);
   color: var(--ink);
   text-align: left;
   box-shadow: 0 12px 35px rgba(23, 37, 28, 0.05);
   transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
-  clip-path: polygon(
-    var(--ticket-cut) 0,
-    calc(100% - var(--ticket-cut)) 0,
-    100% var(--ticket-cut),
-    100% calc(50% - 10px),
-    calc(100% - 8px) 50%,
-    100% calc(50% + 10px),
-    100% calc(100% - var(--ticket-cut)),
-    calc(100% - var(--ticket-cut)) 100%,
-    var(--ticket-cut) 100%,
-    0 calc(100% - var(--ticket-cut)),
-    0 calc(50% + 10px),
-    8px 50%,
-    0 calc(50% - 10px),
-    0 var(--ticket-cut)
-  );
+}
+
+.machine-choice::after {
+  position: absolute;
+  right: -38px;
+  bottom: -54px;
+  width: 150px;
+  height: 150px;
+  border-radius: 50%;
+  background: rgba(240, 165, 26, 0.08);
+  content: "";
+  pointer-events: none;
 }
 
 .machine-choice:hover {
@@ -349,13 +349,18 @@ h1 {
 }
 
 #ticket-form {
-  scroll-margin-top: 24px;
+  scroll-margin-top: 110px;
 }
 
 .form-section,
 .receipt-card {
-  max-width: 720px;
-  margin: 96px auto 0;
+  max-width: 860px;
+  margin: 88px auto 0;
+}
+
+#form-title,
+#ticket-question {
+  scroll-margin-top: 150px;
 }
 
 .form-heading {
@@ -417,32 +422,21 @@ h1 {
 
 form {
   display: grid;
-  gap: 20px;
+  gap: 22px;
 }
 
 .form-card {
-  --ticket-cut: 12px;
   min-width: 0;
   margin: 0;
-  padding: 28px;
+  padding: 30px;
   border: 1px solid var(--line);
-  border-radius: 0;
+  border-radius: 22px;
   background: var(--paper);
   box-shadow: 0 10px 32px rgba(23, 37, 28, 0.05);
-  clip-path: polygon(
-    var(--ticket-cut) 0,
-    calc(100% - var(--ticket-cut)) 0,
-    100% var(--ticket-cut),
-    100% calc(100% - var(--ticket-cut)),
-    calc(100% - var(--ticket-cut)) 100%,
-    var(--ticket-cut) 100%,
-    0 calc(100% - var(--ticket-cut)),
-    0 var(--ticket-cut)
-  );
 }
 
 .form-card legend {
-  padding: 0 10px 0 0;
+  padding: 0 12px 0 2px;
   color: var(--forest-dark);
   font-size: 15px;
   font-weight: 820;
@@ -451,15 +445,20 @@ form {
 
 .field-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 22px 18px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 22px 20px;
 }
 
-.details-grid {
-  grid-template-columns: minmax(0, 1fr);
+.details-grid-printer {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.field-full {
+.details-grid-foam {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.field-full,
+.date-field {
   grid-column: 1 / -1;
 }
 
@@ -495,7 +494,7 @@ select,
 textarea {
   width: 100%;
   border: 1px solid rgba(23, 37, 28, 0.2);
-  border-radius: 11px;
+  border-radius: 13px;
   background: white;
   color: var(--ink);
   font-size: 16px;
@@ -505,12 +504,12 @@ textarea {
 
 input,
 select {
-  min-height: 56px;
+  min-height: 54px;
   padding: 0 16px;
 }
 
 textarea {
-  min-height: 128px;
+  min-height: 120px;
   padding: 16px;
   resize: vertical;
   line-height: 1.5;
@@ -530,7 +529,7 @@ textarea:focus {
 }
 
 .field-help {
-  margin: 15px 0 26px;
+  margin: 13px 0 24px;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
@@ -545,7 +544,7 @@ textarea:focus {
 
 .dropzone {
   position: relative;
-  min-height: 160px;
+  min-height: 150px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -553,7 +552,7 @@ textarea:focus {
   gap: 7px;
   padding: 26px;
   border: 1.5px dashed rgba(23, 37, 28, 0.34);
-  border-radius: 15px;
+  border-radius: 16px;
   background: #f9f7f0;
   color: var(--forest);
   text-align: center;
@@ -667,8 +666,10 @@ textarea:focus {
 
 .submit-area {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   gap: 16px;
-  padding: 8px 2px 0;
+  padding: 10px 2px 0;
 }
 
 .submit-area p {
@@ -680,7 +681,8 @@ textarea:focus {
 }
 
 .submit-area .submit-button {
-  width: 100%;
+  width: auto;
+  min-width: 220px;
   min-height: 56px;
 }
 
@@ -949,7 +951,7 @@ progress {
 }
 
 footer {
-  width: min(1060px, calc(100% - 40px));
+  width: min(1120px, calc(100% - 40px));
   display: flex;
   justify-content: space-between;
   gap: 20px;
@@ -1001,8 +1003,12 @@ footer strong {
     grid-template-columns: 1fr;
   }
 
+  .date-field {
+    grid-column: auto;
+  }
+
   .machine-choice {
-    min-height: 190px;
+    min-height: 184px;
     padding: 23px;
   }
 
@@ -1012,13 +1018,17 @@ footer strong {
   }
 
   .form-card {
-    padding: 23px 18px;
+    padding: 24px 20px;
   }
 
   .submit-area {
+    grid-template-columns: 1fr;
     align-items: stretch;
-    flex-direction: column;
     gap: 16px;
+  }
+
+  .submit-area .submit-button {
+    width: 100%;
   }
 
   .tracker-section {
@@ -1151,11 +1161,11 @@ footer strong {
 }
 
 .queue-board {
-  margin: 84px 0 0;
+  margin: 80px 0 0;
   padding: clamp(24px, 4vw, 38px);
   scroll-margin-top: 24px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-md);
+  border-radius: 24px;
   background: var(--paper);
   box-shadow: 0 12px 36px rgba(23, 37, 28, 0.06);
 }

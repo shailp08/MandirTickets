@@ -60,6 +60,7 @@ function googleHarness() {
   const make=(id,num,machine,created)=>[id,num,machine,'Private Name','Events','Secret design','Private phone',1,'Glossy',24,36,2,'Today','queued','Private notes','poster.pdf: https://drive.google.com/file/d/abcdefghijklmnop/view',created,created,1,'SECRET12','private-key','GitHub Pages','','','','','','[]','[]','',''];
   // Physical row order is reversed, as happens when staff sort the Sheet.
   rows=[make('b','F-0002','Foam cutting','2026-10-22T10:01:00Z'),make('a','F-0001','Foam cutting machine','2026-10-22T10:00:00Z'),make('p','P-0001','24-inch roll printer','2026-10-22T10:00:00Z')];
+  ctx.publicQueueRows_=()=>rows.map(row=>row.slice(0,17));
   const call=(action,body={},secret='s'.repeat(32))=>ctx.doPost({postData:{contents:JSON.stringify({action,secret,...body})}});
   return {ctx,call,getRows:()=>rows};
 }
@@ -86,15 +87,19 @@ test('Google staff operations authenticate, allow flexible order, save usage onc
   assert.equal(ctx.publicWorkshopQueue_().machines[1].tickets[0].ticketNumber,'F-0002');
 });
 test('Google public queue and private tracker agree after Sheet sorting and expose no personal data',()=>{
-  const {ctx}=googleHarness(); const queue=ctx.publicWorkshopQueue_();
-  assert.equal(queue.machines[1].tickets[0].ticketNumber,'F-0001');
+  const {ctx,getRows}=googleHarness();
   assert.equal(ctx.activePosition_(ctx.ensureTicketSheet_(),2,'Foam cutting','queued'),2);
+  // A malformed private-history cell must not take down the lightweight public queue.
+  getRows()[0][28]='not-json';
+  const queue=ctx.publicWorkshopQueue_();
+  assert.equal(queue.machines[1].tickets[0].ticketNumber,'F-0001');
   const json=JSON.stringify(queue); for(const value of ['Private phone','Private notes','Secret design','SECRET12','private-key','drive.google']) assert.ok(!json.includes(value));
 });
 test('Google adapter keeps authentication server-side and fails closed instead of creating local jobs',async()=>{
   const url='https://script.google.com/macros/s/test/exec',secret='x'.repeat(32);
-  const adapter=createGoogleWorkshop({url,secret,fetcher:async(u,opts)=>{assert.equal(u,url);const body=JSON.parse(opts.body);assert.equal(body.secret,secret);assert.equal(body.action,'staffList');return {ok:true,json:async()=>({ok:true,tickets:[]})};}});
+  const adapter=createGoogleWorkshop({url,secret,fetcher:async(u,opts)=>{assert.equal(u,url);const body=JSON.parse(opts.body);assert.equal(body.secret,secret);return {ok:true,json:async()=>body.action==='publicQueue'?{ok:true,machines:[],updatedAt:'2026-10-26T00:00:00Z'}:{ok:true,tickets:[]}};}});
   assert.deepEqual(await adapter.list(),[]);
+  assert.deepEqual((await adapter.queue()).machines,[]);
   await assert.rejects(createGoogleWorkshop({url,secret,fetcher:async()=>{throw new Error('offline');}}).list(),/No local replacement/);
   await assert.rejects(createGoogleWorkshop({url,secret,fetcher:async()=>({ok:true,json:async()=>({ok:false,status:409,error:'conflict'})})}).update('a','ready',1),e=>e.status===409);
 });

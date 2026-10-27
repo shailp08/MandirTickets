@@ -102,7 +102,7 @@ test('reopening clears the old ready timestamp and survives a restart', async t 
 });
 test('HTTP flow: auth, uploads, receipt, privacy, tracking, status and export',async t=>{
   const dir=await temp(t);
-  const child=spawn(process.execPath,['server.js'],{cwd:new URL('..',import.meta.url),env:{...process.env,NODE_ENV:'test',APP_ORIGIN:'https://desk.example',COOKIE_SECURE:'true',CLAMSCAN_PATH:'',PORT:'0',DATA_DIR:dir,ADMIN_USERNAME:'admin',ADMIN_PASSWORD:'test-only-secret',STAFF_USERNAME:'workshop',STAFF_PASSWORD:'staff-test-secret',TEXTBEE_API_KEY:'',TEXTBEE_DEVICE_ID:'',WORKSHOP_GOOGLE_SCRIPT_URL:'',SHEETS_WEBHOOK_URL:'',SHEETS_SHARED_SECRET:'',MAX_UPLOAD_BYTES:'1048576',MAX_UPLOAD_FILES:'3'},stdio:['ignore','pipe','pipe']});
+  const child=spawn(process.execPath,['server.js'],{cwd:new URL('..',import.meta.url),env:{...process.env,NODE_ENV:'test',APP_ORIGIN:'https://desk.example',COOKIE_SECURE:'true',CLAMSCAN_PATH:'',PORT:'0',DATA_DIR:dir,ADMIN_USERNAME:'admin',ADMIN_PASSWORD:'test-only-secret',STAFF_USERNAME:'workshop',STAFF_PASSWORD:'staff-test-secret',TEXTBEE_API_KEY:'',TEXTBEE_DEVICE_ID:'',WORKSHOP_GOOGLE_SCRIPT_URL:'',SHEETS_WEBHOOK_URL:'',SHEETS_SHARED_SECRET:'',MAX_UPLOAD_BYTES:'1048576',MAX_UPLOAD_FILES:'3',MAX_UPLOAD_TOTAL_BYTES:'1500000'},stdio:['ignore','pipe','pipe']});
   t.after(async()=>{const exited=once(child,'exit');child.kill();await exited;});
   const port=await new Promise((resolve,reject)=>{child.stdout.on('data',d=>{const m=String(d).match(/port (\d+)/);if(m)resolve(m[1]);});child.once('error',reject);child.once('exit',()=>reject(new Error('Server exited before listening.')));});
   const base='http://127.0.0.1:'+port;
@@ -164,6 +164,11 @@ test('HTTP flow: auth, uploads, receipt, privacy, tracking, status and export',a
   const oversized = form(); oversized.set('files',new Blob([new Uint8Array(1048577)]),'oversized.jpg');
   const oversizedResponse = await fetch(base+'/api/tickets',{method:'POST',headers:{'idempotency-key':'http-oversized-1234'},body:oversized});
   assert.equal(oversizedResponse.status,400); assert.match((await oversizedResponse.json()).error,/1 MB/);
+  const overTotal = form();
+  const largePdf = () => new Blob(['%PDF-1.7\n',new Uint8Array(800000),'\n%%EOF\n']);
+  overTotal.set('files',largePdf(),'one.pdf'); overTotal.append('files',largePdf(),'two.pdf');
+  const overTotalResponse = await fetch(base+'/api/tickets',{method:'POST',headers:{'idempotency-key':'http-over-total-1234'},body:overTotal});
+  assert.equal(overTotalResponse.status,400); assert.match((await overTotalResponse.json()).error,/total no more than 2 MB/i);
   assert.equal((await fs.readdir(path.join(dir,'uploads'))).length,1);
   assert.equal((await(await fetch(base+'/api/track/P-0001')).json()).status,'ready');
   const queue=await(await fetch(base+'/api/queue')).text();assert.ok(queue.includes('Test Person'));assert.ok(!queue.includes('sample.pdf'));

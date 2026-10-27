@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { sheetsJsonp } from './sheets-api.js';
+import { fetchSheetsQueue } from './sheets-api.js';
 
 const labels = {
   'pending-review': 'In Review',
@@ -12,6 +12,55 @@ const QUEUE_TYPES = [
   ['printer', 'Poster printing'],
   ['foam', 'Foam cutting'],
 ];
+const QUEUE_CACHE_MAX_AGE = 5 * 60 * 1000;
+
+function queueCacheKey(apiBase, sheetsUrl) {
+  return `mandir-queue:${sheetsUrl || apiBase || 'same-origin'}`;
+}
+
+export function readCachedQueue(storage, key, now = Date.now()) {
+  if (!storage) return null;
+  try {
+    const cached = JSON.parse(storage.getItem(key) || 'null');
+    if (!cached || !Number.isFinite(cached.savedAt) || now - cached.savedAt > QUEUE_CACHE_MAX_AGE || !Array.isArray(cached.data?.machines)) return null;
+    return cached.data;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedQueue(storage, key, data) {
+  if (!storage) return;
+  try { storage.setItem(key, JSON.stringify({ savedAt: Date.now(), data })); } catch {}
+}
+
+function browserSessionStorage() {
+  try { return typeof window === 'undefined' ? null : window.sessionStorage; } catch { return null; }
+}
+
+export async function fetchQueueApi(apiBase, { fetcher = fetch, timeout = 8000 } = {}) {
+  const base = (apiBase || '').replace(/\/$/, '');
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeout);
+  try {
+    const response = await fetcher(`${base}/api/queue`, { signal: controller.signal });
+    if (!response.ok) {
+      let details = '';
+      try {
+        const body = await response.json();
+        details = body?.error || body?.message || '';
+      } catch {}
+      throw new Error(details || `HTTP ${response.status}`);
+    }
+    return await response.json();
+  } catch (error) {
+    if (timedOut) throw new Error('The queue request timed out.');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function getPositionText(t) {
   const status = String(t?.status || '').toLowerCase();
@@ -31,7 +80,9 @@ function getPositionText(t) {
 }
 
 export default function QueueBoard({ apiBase, sheetsUrl, preview, recentTicket }) {
-  const [data, setData] = useState(null), [error, setError] = useState(''), [machine, setMachine] = useState('printer');
+  const storage = browserSessionStorage();
+  const cacheKey = queueCacheKey(apiBase, sheetsUrl);
+  const [data, setData] = useState(() => readCachedQueue(storage, cacheKey)), [error, setError] = useState(''), [machine, setMachine] = useState('printer');
   const [loading, setLoading] = useState(false), [refresh, setRefresh] = useState(0);
 
   useEffect(() => {
@@ -41,7 +92,7 @@ export default function QueueBoard({ apiBase, sheetsUrl, preview, recentTicket }
   useEffect(() => {
     let live = true;
     let busy = false;
-    let hasLoadedData = false;
+    let hasLoadedData = Boolean(data);
     async function load() {
       if (busy || preview) return;
       busy = true;
@@ -49,19 +100,9 @@ export default function QueueBoard({ apiBase, sheetsUrl, preview, recentTicket }
       try {
         let next;
         if (sheetsUrl) {
-          next = await sheetsJsonp(sheetsUrl, { action: 'queue' });
+          next = await fetchSheetsQueue(sheetsUrl);
         } else {
-          const base = (apiBase || '').replace(/\/$/, '');
-          const response = await fetch(`${base}/api/queue`, { signal: AbortSignal.timeout(15000) });
-          if (!response.ok) {
-            let details = '';
-            try {
-              const body = await response.json();
-              details = body?.error || body?.message || '';
-            } catch {}
-            throw new Error(details || `HTTP ${response.status}`);
-          }
-          next = await response.json();
+          next = await fetchQueueApi(apiBase);
         }
         if (next && next.ok === false) {
           throw new Error(next.error || 'Failed to load queue data');
@@ -73,6 +114,7 @@ export default function QueueBoard({ apiBase, sheetsUrl, preview, recentTicket }
           hasLoadedData = true;
           setData(next);
           setError('');
+          writeCachedQueue(storage, cacheKey, next);
         }
       } catch (err) {
         if (live) {

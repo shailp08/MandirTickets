@@ -9,7 +9,7 @@ var HEADERS = [
   'Status', 'Notes', 'Files', 'Created', 'Updated', 'Revision',
   'Tracking code', 'Request key', 'Source', 'Customer email', 'Last notified status',
   'Approx. cost (USD)', 'Cost basis', 'Cost estimate version',
-  'Material usage', 'Staff history', 'SMS consent', 'Review reason'
+  'Material usage', 'Staff history', 'SMS consent', 'Review reason', 'Request fingerprint'
 ];
 var STATUSES = ['pending-review', 'declined', 'queued', 'in-progress', 'ready', 'collected', 'cancelled'];
 var MACHINES = { printer: 'Poster printing', foam: 'Foam cutting' };
@@ -18,10 +18,13 @@ var DEADLINES = ['Today', 'Tomorrow', 'This week', 'No rush'];
 var MAX_FILES = 5;
 var MAX_FILE_BYTES = 200 * 1024 * 1024;
 var MAX_TOTAL_BYTES = 200 * 1024 * 1024;
+var MAX_VECTOR_FILE_BYTES = 10 * 1024 * 1024;
 var LEGACY_MAX_FILE_BYTES = 5 * 1024 * 1024;
 var LEGACY_MAX_TOTAL_BYTES = 10 * 1024 * 1024;
 var DEFAULT_DAILY_LIMIT = 250;
 var DEFAULT_DAILY_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024;
+var PUBLIC_QUEUE_CACHE_KEY = 'PUBLIC_QUEUE_V2';
+var PUBLIC_QUEUE_CACHE_SECONDS = 10;
 var DEFAULT_UPLOAD_ORIGINS = [
   'https://shailp08.github.io',
   'http://127.0.0.1:4177',
@@ -34,6 +37,7 @@ function onOpen() {
     .addItem('Set up backend', 'setupMandirTicketSystem')
     .addItem('Refresh sheet formatting', 'formatTicketSheet')
     .addItem('Audit ticket files', 'showTicketPipelineAudit')
+    .addItem('Clean abandoned uploads', 'cleanupAbandonedUploads')
     .addToUi();
 }
 
@@ -118,6 +122,7 @@ function formatTicketSheet() {
   sheet.setColumnWidth(16, 260);
   sheet.hideColumns(1);
   sheet.hideColumns(20, 2);
+  sheet.hideColumns(32);
   var validation = SpreadsheetApp.newDataValidation().requireValueInList(STATUSES, true).setAllowInvalid(false).build();
   sheet.getRange(2, 14, Math.max(sheet.getMaxRows() - 1, 1), 1).setDataValidation(validation);
   return true;
@@ -129,17 +134,22 @@ function doPost(event) {
     var raw = event && event.postData ? event.postData.contents : '';
     var input = JSON.parse(raw || (event && event.parameter && event.parameter.payload) || '{}');
 
+    if (input.action === 'publicQueue') return jsonResponse_(publicWorkshopQueue_());
     if (['staffList', 'staffUpdate', 'staffUsage', 'adminReview'].indexOf(input.action) !== -1) return staffAction_(input, lock, input.publicStaff === true);
     // Preserve compatibility with the optional Node server's authenticated Sheets mirror.
     if (Array.isArray(input.row)) return syncServerRow_(input, lock);
     if (input.action !== 'createTicket') return jsonResponse_({ ok: false, error: 'Unsupported action.' });
 
     var request = validatePublicTicket_(input);
+    var requestFingerprint = requestFingerprint_(request);
     lock.waitLock(20000);
     var properties = PropertiesService.getScriptProperties();
     var sheet = ensureTicketSheet_(openBook_());
     var existing = findRow_(sheet, 21, request.requestKey);
     if (existing) {
+      var existingFingerprint = String(sheet.getRange(existing, 32).getDisplayValue() || '');
+      if (existingFingerprint && existingFingerprint !== requestFingerprint) throw new Error('This request was already saved with different details or files. Reload the form to start a new request.');
+      if (!existingFingerprint) sheet.getRange(existing, 32).setValue(requestFingerprint);
       properties.deleteProperty(uploadReservationKey_(request.requestKey));
       return jsonResponse_({ ok: true, duplicate: true });
     }
@@ -155,10 +165,11 @@ function doPost(event) {
       request.paperType, request.width, request.length, request.thickness,
       request.neededBy, 'pending-review', request.notes, uploadedFiles.join('\n'),
       createdAt, createdAt, 1, trackingCode, request.requestKey, 'GitHub Pages',
-      '', '', '', '', '', '[]', '[]', request.smsConsent ? 'yes' : '', ''
+      '', '', '', '', '', '[]', '[]', request.smsConsent ? 'yes' : '', '', requestFingerprint
     ];
     sheet.getRange(sheet.getLastRow() + 1, 1, 1, HEADERS.length).setValues([row.map(escapeCell_)]);
     SpreadsheetApp.flush();
+    invalidatePublicQueueCache_();
     incrementDailyCount_(properties);
     properties.deleteProperty(uploadReservationKey_(request.requestKey));
     return jsonResponse_({ ok: true });
@@ -253,6 +264,31 @@ function validatePublicTicket_(input) {
   return request;
 }
 
+function requestFingerprint_(request) {
+  var canonical = JSON.stringify({
+    machine: request.machine,
+    customerName: request.customerName,
+    department: request.department,
+    purpose: request.purpose,
+    phone: request.phone,
+    smsConsent: request.smsConsent,
+    notes: request.notes,
+    quantity: request.quantity,
+    width: request.width,
+    length: request.length,
+    thickness: request.thickness,
+    neededBy: request.neededBy,
+    paperType: request.paperType,
+    files: request.files.map(function(file) {
+      return file.id
+        ? { id: file.id, index: file.index, name: file.name, type: file.type, size: file.size, md5Checksum: file.md5Checksum }
+        : { name: file.name, type: file.type, size: file.size, data: file.data };
+    })
+  });
+  var digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, canonical, Utilities.Charset.UTF_8);
+  return digest.map(function(value) { return (value + 256).toString(16).slice(-2); }).join('');
+}
+
 function neededByDate_(value) {
   var text = String(value || '').trim();
   if (DEADLINES.indexOf(text) !== -1) return text;
@@ -280,6 +316,7 @@ function validateFiles_(files, machine) {
     if (!name || name.length > 180 || /[\\/\u0000-\u001f]/.test(name)) throw new Error('Use a safe filename under 180 characters.');
     if (!format.pattern.test(name)) throw new Error(format.message);
     if (!Number.isSafeInteger(size) || size < 1 || size > MAX_FILE_BYTES) throw new Error('Each file must be 200 MB or smaller.');
+    if (/\.(svg|dxf)$/i.test(name) && size > MAX_VECTOR_FILE_BYTES) throw new Error('SVG and DXF files must be 10 MB or smaller so their full contents can be checked.');
     total += size;
     if (total > MAX_TOTAL_BYTES) throw new Error('Attachments must total 200 MB or less.');
     var id = String(file && file.id || '');
@@ -312,6 +349,7 @@ function saveFiles_(files, ticketNumber, requestKey, properties) {
       if (metadata.trashed || metadata.parents.indexOf(folderId) === -1 || Number(metadata.size) !== file.size || (!ownedByRequest && !legacyPendingName)) throw new Error('An uploaded file could not be verified.');
       if (String(metadata.md5Checksum || '').toLowerCase() !== file.md5Checksum) throw new Error('An uploaded file failed its integrity check.');
       var uploaded = DriveApp.getFileById(file.id);
+      inspectDriveFile_(file, metadata, uploaded);
       uploaded.setName(ticketNumber + '-' + (index + 1) + '-' + safeName);
       return uploaded.getName() + ' — ' + uploaded.getUrl();
     }
@@ -332,6 +370,61 @@ function getDriveFileMetadata_(fileId) {
   var metadata = JSON.parse(response.getContentText() || '{}');
   metadata.parents = Array.isArray(metadata.parents) ? metadata.parents : [];
   return metadata;
+}
+
+function responseHeader_(response, wanted) {
+  var headers = response.getAllHeaders ? response.getAllHeaders() : {};
+  var value = '';
+  Object.keys(headers).some(function(key) {
+    if (key.toLowerCase() === wanted.toLowerCase()) {
+      value = String(headers[key]);
+      return true;
+    }
+    return false;
+  });
+  return value;
+}
+
+function readDriveRange_(fileId, start, end, size) {
+  var response = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) + '?alt=media', {
+    headers: {
+      Authorization: 'Bearer ' + ScriptApp.getOAuthToken(),
+      Range: 'bytes=' + start + '-' + end
+    },
+    muteHttpExceptions: true
+  });
+  var code = response.getResponseCode();
+  if (code !== 206 && !(code === 200 && start === 0 && end === size - 1)) throw new Error('Google Drive could not verify the uploaded file contents.');
+  if (code === 206 && responseHeader_(response, 'Content-Range') !== 'bytes ' + start + '-' + end + '/' + size) throw new Error('Google Drive returned an incomplete file range.');
+  var bytes = response.getBlob().getBytes();
+  if (bytes.length !== end - start + 1) throw new Error('Google Drive returned an incomplete file range.');
+  return bytes;
+}
+
+function byte_(value) {
+  return value < 0 ? value + 256 : value;
+}
+
+function inspectDriveFile_(file, metadata, uploaded) {
+  var lower = file.name.toLowerCase();
+  var size = Number(metadata.size);
+  if (/\.(svg|dxf)$/.test(lower)) {
+    var vectorBytes = uploaded.getBlob().getBytes();
+    if (vectorBytes.length !== size) throw new Error('Google Drive returned incomplete vector artwork.');
+    inspectFile_(file.name, vectorBytes);
+    return;
+  }
+  var prefix = readDriveRange_(file.id, 0, Math.min(size - 1, 15), size);
+  var suffix = readDriveRange_(file.id, Math.max(0, size - 2048), size - 1, size);
+  if (lower.endsWith('.pdf')) {
+    var header = Utilities.newBlob(prefix).getDataAsString('ISO-8859-1');
+    var footer = Utilities.newBlob(suffix).getDataAsString('ISO-8859-1');
+    if (!/^%PDF-(1\.[0-7]|2\.0)[\r\n ]/.test(header) || !/%%EOF\s*$/.test(footer)) throw new Error('A PDF attachment is incomplete or is not a valid PDF.');
+    return;
+  }
+  if (/\.jpe?g$/.test(lower) && !(byte_(prefix[0]) === 255 && byte_(prefix[1]) === 216 && byte_(prefix[2]) === 255 && byte_(suffix[suffix.length - 2]) === 255 && byte_(suffix[suffix.length - 1]) === 217)) {
+    throw new Error('A JPG attachment is not a valid JPG.');
+  }
 }
 
 function beginUpload_(params) {
@@ -412,6 +505,35 @@ function uploadReservationKey_(requestKey) {
   return 'UPLOAD_' + requestKey;
 }
 
+function cleanupAbandonedUploads() {
+  var properties = PropertiesService.getScriptProperties();
+  var folderId = properties.getProperty('UPLOAD_FOLDER_ID');
+  if (!folderId) throw new Error('The upload folder is not configured. Run setup again.');
+  var cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  var removedReservations = 0;
+  var allProperties = properties.getProperties();
+  Object.keys(allProperties).forEach(function(key) {
+    if (!/^UPLOAD_[a-f0-9]{32}$/.test(key)) return;
+    var state;
+    try { state = JSON.parse(allProperties[key]); } catch (_error) { state = null; }
+    if (!state || !Number.isFinite(Number(state.created)) || Number(state.created) < cutoff) {
+      properties.deleteProperty(key);
+      removedReservations++;
+    }
+  });
+  var files = DriveApp.getFolderById(folderId).getFiles();
+  var removed = 0;
+  while (files.hasNext()) {
+    var file = files.next();
+    if (/^\.mandir-pending-[a-f0-9]{32}-\d+-/.test(file.getName()) && file.getDateCreated().getTime() < cutoff) {
+      file.setTrashed(true);
+      removed++;
+    }
+  }
+  console.log('Removed ' + removed + ' abandoned upload(s) and ' + removedReservations + ' stale reservation(s).');
+  return removed;
+}
+
 function checkUploadReservation_(properties, requestKey, index, size) {
   var propertyKey = uploadReservationKey_(requestKey);
   var state;
@@ -443,15 +565,158 @@ function commitUploadReservation_(properties, reservation, index, size) {
 
 function inspectFile_(name, bytes) {
   var lower = name.toLowerCase();
-  if (lower.endsWith('.pdf') && !(bytes[0] === 37 && bytes[1] === 80 && bytes[2] === 68 && bytes[3] === 70)) throw new Error('A PDF attachment is not a valid PDF.');
+  if (lower.endsWith('.pdf') && !(byte_(bytes[0]) === 37 && byte_(bytes[1]) === 80 && byte_(bytes[2]) === 68 && byte_(bytes[3]) === 70 && /%%EOF\s*$/.test(Utilities.newBlob(bytes.slice(-2048)).getDataAsString('ISO-8859-1')))) throw new Error('A PDF attachment is incomplete or is not a valid PDF.');
   if (lower.endsWith('.png') && !(bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71)) throw new Error('A PNG attachment is not a valid PNG.');
-  if (/\.jpe?g$/.test(lower) && !(bytes[0] === 255 && bytes[1] === 216 && bytes[bytes.length - 2] === 255 && bytes[bytes.length - 1] === 217)) throw new Error('A JPG attachment is not a valid JPG.');
+  if (/\.jpe?g$/.test(lower) && !(byte_(bytes[0]) === 255 && byte_(bytes[1]) === 216 && byte_(bytes[bytes.length - 2]) === 255 && byte_(bytes[bytes.length - 1]) === 217)) throw new Error('A JPG attachment is not a valid JPG.');
   if (/\.tiff?$/.test(lower) && !((bytes[0] === 73 && bytes[1] === 73) || (bytes[0] === 77 && bytes[1] === 77))) throw new Error('A TIFF attachment is not a valid TIFF.');
   if (lower.endsWith('.svg') || lower.endsWith('.dxf')) {
     var text = Utilities.newBlob(bytes).getDataAsString('UTF-8');
-    if (lower.endsWith('.svg') && (!/<svg[\s>]/i.test(text) || /<script|<foreignObject|<!ENTITY|\bon\w+\s*=|javascript:|data:text\/html|url\s*\(/i.test(text))) throw new Error('SVG files must contain static vector artwork only.');
-    if (lower.endsWith('.dxf') && (!/SECTION/i.test(text) || !/EOF\s*$/i.test(text))) throw new Error('The DXF attachment is incomplete.');
+    if (text.indexOf('\uFFFD') !== -1) throw new Error('SVG and ASCII DXF files must use valid UTF-8 text.');
+    if (lower.endsWith('.svg')) inspectSvgText_(text);
+    if (lower.endsWith('.dxf')) inspectDxfText_(text);
   }
+}
+
+function decodeSvgAttribute_(value) {
+  var output = '';
+  var position = 0;
+  var entity = /&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/ig;
+  var match;
+  while ((match = entity.exec(value))) {
+    if (value.slice(position, match.index).indexOf('&') !== -1) throw new Error('SVG contains an invalid entity.');
+    output += value.slice(position, match.index);
+    var name = match[1].toLowerCase();
+    var code = name === 'amp' ? 38 : name === 'lt' ? 60 : name === 'gt' ? 62 : name === 'quot' ? 34 : name === 'apos' ? 39
+      : name.indexOf('#x') === 0 ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
+    if (!Number.isSafeInteger(code) || code < 1 || code > 0x10ffff) throw new Error('SVG contains an invalid entity.');
+    output += String.fromCodePoint(code);
+    position = entity.lastIndex;
+  }
+  if (value.slice(position).indexOf('&') !== -1) throw new Error('SVG contains an invalid entity.');
+  return output + value.slice(position);
+}
+
+function inspectSvgText_(text) {
+  var tags = {};
+  'svg g defs title desc path rect circle ellipse line polyline polygon text tspan linearGradient radialGradient stop clipPath'.split(' ').forEach(function(name) { tags[name] = true; });
+  var attributes = {};
+  'id version x y x1 y1 x2 y2 cx cy r rx ry width height viewBox preserveAspectRatio d points transform fill fill-rule fill-opacity stroke stroke-width stroke-linecap stroke-linejoin stroke-miterlimit stroke-dasharray stroke-dashoffset stroke-opacity opacity clip-path clip-rule font-family font-size font-weight font-style text-anchor dominant-baseline dx dy rotate offset stop-color stop-opacity gradientUnits gradientTransform spreadMethod fx fy fr'.split(' ').forEach(function(name) { attributes[name] = true; });
+  var stack = [];
+  var rootSeen = false;
+  var rootClosed = false;
+  var inTag = false;
+  var quote = '';
+  var token = '';
+
+  function processTag(value) {
+    if (/^<[!?]/.test(value)) throw new Error('SVG declarations, comments, CDATA and processing instructions are not supported.');
+    var closing = /^<\/([A-Za-z][\w.-]*)\s*>$/.exec(value);
+    if (closing) {
+      if (!stack.length || stack.pop() !== closing[1]) throw new Error('SVG elements are not correctly nested.');
+      if (!stack.length) rootClosed = true;
+      return;
+    }
+    var body = value.slice(1, -1);
+    var selfClosing = /\/\s*$/.test(body);
+    if (selfClosing) body = body.replace(/\/\s*$/, '');
+    var nameMatch = /^([A-Za-z][\w.-]*)/.exec(body);
+    if (!nameMatch || !tags[nameMatch[1]]) throw new Error('SVG contains unsupported or active elements.');
+    var name = nameMatch[1];
+    var isRoot = !rootSeen;
+    if (isRoot) {
+      if (name !== 'svg') throw new Error('The SVG must have an svg root element.');
+      rootSeen = true;
+    } else if (rootClosed || !stack.length) {
+      throw new Error('SVG must contain one root element.');
+    }
+    var rest = body.slice(name.length);
+    var sawNamespace = false;
+    while (rest.length) {
+      var attribute = /^\s+([A-Za-z_:][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(rest);
+      if (!attribute) throw new Error('SVG contains malformed or unsupported attributes.');
+      var attributeName = attribute[1];
+      var attributeValue = decodeSvgAttribute_(attribute[2] === undefined ? attribute[3] : attribute[2]);
+      var specialAttribute = false;
+      if (attributeName === 'xmlns' && attributeValue === 'http://www.w3.org/2000/svg' && name === 'svg') { sawNamespace = true; specialAttribute = true; }
+      else if (attributeName === 'xml:space' && (attributeValue === 'default' || attributeValue === 'preserve')) specialAttribute = true;
+      else if (attributeName.indexOf(':') !== -1 || !attributes[attributeName]) throw new Error('SVG contains unsupported attributes. Remove scripts, styles and external resources.');
+      if (!specialAttribute && /\\|\/\*|(?:https?|data|javascript):/i.test(attributeValue)) throw new Error('SVG escaped styles and external resources are not allowed.');
+      if (!specialAttribute && /url\s*\(/i.test(attributeValue) && !/^url\(#[A-Za-z_][\w.-]*\)$/.test(attributeValue)) throw new Error('SVG external resources are not allowed.');
+      rest = rest.slice(attribute[0].length);
+    }
+    if (isRoot && !sawNamespace) throw new Error('SVG must declare the standard SVG namespace.');
+    if (!selfClosing) stack.push(name);
+    else if (!stack.length) rootClosed = true;
+    if (stack.length > 100) throw new Error('SVG nesting is too complex. Export a flattened PDF instead.');
+  }
+
+  for (var index = 0; index < text.length; index++) {
+    var character = text[index];
+    if (!inTag) {
+      if (character === '<') {
+        inTag = true;
+        token = '<';
+      } else if ((!rootSeen || rootClosed) && !/\s/.test(character)) {
+        throw new Error('SVG contains data outside its root element.');
+      }
+      continue;
+    }
+    token += character;
+    if (token.length > 262144) throw new Error('An SVG element is too complex. Export a flattened PDF instead.');
+    if (quote) {
+      if (character === quote) quote = '';
+    } else if (character === '"' || character === "'") quote = character;
+    else if (character === '>') {
+      processTag(token);
+      inTag = false;
+      token = '';
+    }
+  }
+  if (inTag || !rootSeen || stack.length || !rootClosed) throw new Error('The SVG is empty, truncated or not well formed.');
+}
+
+function inspectDxfText_(text) {
+  if (text.indexOf('\u0000') !== -1) throw new Error('Binary DXF is not supported. Export an ASCII DXF.');
+  var lines = text.replace(/\r/g, '').split('\n');
+  var code = null;
+  var section = false;
+  var sectionName = false;
+  var sawSection = false;
+  var eof = false;
+  lines.forEach(function(raw) {
+    var value = raw.trim();
+    if (!value && code === null) return;
+    if (eof) {
+      if (value) throw new Error('DXF has data after its EOF marker.');
+      return;
+    }
+    if (raw.length > 262144) throw new Error('A DXF record is too long.');
+    if (code === null) {
+      if (!/^\d{1,4}$/.test(value) || Number(value) > 1071) throw new Error('DXF contains an invalid group code.');
+      code = Number(value);
+      return;
+    }
+    var group = code;
+    code = null;
+    if (sectionName) {
+      if (group !== 2 || !/^[A-Z0-9_]+$/.test(value)) throw new Error('DXF section name is missing.');
+      sectionName = false;
+      return;
+    }
+    if (group === 0 && value === 'SECTION') {
+      if (section) throw new Error('DXF sections cannot be nested.');
+      section = true; sectionName = true; sawSection = true;
+    } else if (group === 0 && value === 'ENDSEC') {
+      if (!section) throw new Error('DXF has an unmatched ENDSEC.');
+      section = false;
+    } else if (group === 0 && value === 'EOF') {
+      if (section || !sawSection) throw new Error('DXF is incomplete.');
+      eof = true;
+    } else if (!section && group !== 999) throw new Error('DXF data must be inside a section.');
+    var numeric = (group >= 10 && group <= 79) || (group >= 110 && group <= 149) || (group >= 160 && group <= 179) || (group >= 210 && group <= 239) || (group >= 270 && group <= 299) || (group >= 370 && group <= 389) || (group >= 400 && group <= 409) || (group >= 420 && group <= 429) || (group >= 440 && group <= 459) || (group >= 460 && group <= 469) || (group >= 1010 && group <= 1071);
+    if (numeric && (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(value) || !Number.isFinite(Number(value)))) throw new Error('DXF contains a non-finite or invalid numeric value.');
+  });
+  if (!eof || code !== null || sectionName) throw new Error('DXF is truncated or missing EOF.');
 }
 
 function syncServerRow_(input, lock) {
@@ -466,6 +731,7 @@ function syncServerRow_(input, lock) {
   sheet.getRange(target, 1, 1, 19).setValues([input.row.map(escapeCell_)]);
   sheet.getRange(target, 22).setValue('Node API');
   SpreadsheetApp.flush();
+  invalidatePublicQueueCache_();
   return jsonResponse_({ ok: true });
 }
 
@@ -673,13 +939,69 @@ function staffTicket_(row) {
     usage: parsed(row[27]), history: parsed(row[28]), smsConsent: row[29] === 'yes', reason: String(row[30] || '') };
 }
 function workshopRows_(sheet) { return sheet.getLastRow() < 2 ? [] : sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADERS.length).getValues(); }
+
+function publicQueueCache_() {
+  try { return typeof CacheService === 'undefined' ? null : CacheService.getScriptCache(); }
+  catch (_error) { return null; }
+}
+
+function invalidatePublicQueueCache_() {
+  var cache = publicQueueCache_();
+  if (cache) {
+    try { cache.remove(PUBLIC_QUEUE_CACHE_KEY); }
+    catch (_error) { /* Cache failures must never block a ticket update. */ }
+  }
+}
+
+function publicQueueRows_() {
+  var sheet = openBook_().getSheetByName(TICKET_SHEET);
+  if (!sheet) throw new Error('The ticket backend has not been set up.');
+  var lastRow = sheet.getLastRow();
+  return lastRow < 2 ? [] : sheet.getRange(2, 1, lastRow - 1, 17).getValues();
+}
+
+function publicQueueTicket_(row) {
+  var ticketNumber = String(row[1] || '');
+  return {
+    id: String(row[0] || ticketNumber),
+    ticketNumber: ticketNumber,
+    sequence: Number(ticketNumber.slice(2)) || 0,
+    machine: machineId_(row[2]),
+    customerName: String(row[3] || ''),
+    status: String(row[13] || '').trim().toLowerCase(),
+    createdAt: row[16] instanceof Date ? row[16].toISOString() : String(row[16] || '')
+  };
+}
+
 function publicWorkshopQueue_() {
-  var tickets = workshopRows_(ensureTicketSheet_(openBook_())).map(staffTicket_).sort(fifoCompare);
-  return { ok: true, updatedAt: new Date().toISOString(), machines: Object.keys(MACHINES).map(function(id) {
-    var active = tickets.filter(function(t) { return t.machine === id && (t.status === 'queued' || t.status === 'in-progress'); });
-    var visible = tickets.filter(function(t) { return t.machine === id && ['pending-review','queued','in-progress'].includes(t.status); });
-    return { id: id, name: MACHINES[id], waiting: active.length, inReview: visible.filter(t => t.status === 'pending-review').length, tickets: visible.map(function(t) { return { ticketNumber: t.ticketNumber, customerName: t.customerName || '', status: t.status, position: t.status === 'pending-review' ? null : active.findIndex(a => a.id === t.id) + 1 }; }) };
+  var cache = publicQueueCache_();
+  if (cache) {
+    try {
+      var cached = JSON.parse(cache.get(PUBLIC_QUEUE_CACHE_KEY) || 'null');
+      if (cached && Array.isArray(cached.machines)) return cached;
+    } catch (_error) {
+      try { cache.remove(PUBLIC_QUEUE_CACHE_KEY); }
+      catch (_removeError) { /* Continue with a fresh Sheet read. */ }
+    }
+  }
+  var visibleStatuses = { 'pending-review': true, queued: true, 'in-progress': true };
+  var tickets = publicQueueRows_().map(publicQueueTicket_).filter(function(ticket) {
+    return ticket.machine && ticket.ticketNumber && visibleStatuses[ticket.status];
+  }).sort(fifoCompare);
+  var snapshot = { ok: true, updatedAt: new Date().toISOString(), machines: Object.keys(MACHINES).map(function(id) {
+    var visible = tickets.filter(function(ticket) { return ticket.machine === id; });
+    var active = visible.filter(function(ticket) { return ticket.status === 'queued' || ticket.status === 'in-progress'; });
+    var positions = {};
+    active.forEach(function(ticket, index) { positions[ticket.id] = index + 1; });
+    return { id: id, name: MACHINES[id], waiting: active.length, inReview: visible.filter(function(ticket) { return ticket.status === 'pending-review'; }).length, tickets: visible.map(function(ticket) {
+      return { ticketNumber: ticket.ticketNumber, customerName: ticket.customerName, status: ticket.status, position: ticket.status === 'pending-review' ? null : positions[ticket.id] || null };
+    }) };
   }) };
+  if (cache) {
+    try { cache.put(PUBLIC_QUEUE_CACHE_KEY, JSON.stringify(snapshot), PUBLIC_QUEUE_CACHE_SECONDS); }
+    catch (_error) { /* A large or unavailable cache must not break the queue. */ }
+  }
+  return snapshot;
 }
 function staffAction_(input, lock, publicAccess) {
   try {
@@ -736,6 +1058,7 @@ function staffAction_(input, lock, publicAccess) {
     if (row[27].length > 45000 || row[28].length > 45000) workshopFail_('This ticket has reached its history limit. Contact the coordinator.');
     sheet.getRange(index + 2, 1, 1, HEADERS.length).setValues([row.map(escapeCell_)]);
     SpreadsheetApp.flush();
+    invalidatePublicQueueCache_();
     return jsonResponse_({ ok: true, ticket: ticket });
   } catch (error) {
     return jsonResponse_({ ok: false, status: error.status || 503, error: error.status ? error.message : 'Google Sheets could not complete this operation. Refresh and retry.' });
@@ -758,5 +1081,6 @@ function holdUnreviewedQueueForAdminReview() {
       sheet.getRange(index + 2,1,1,HEADERS.length).setValues([row.map(escapeCell_)]);
     });
     SpreadsheetApp.flush();
+    invalidatePublicQueueCache_();
   } finally { lock.releaseLock(); }
 }

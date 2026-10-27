@@ -10,7 +10,7 @@ import {
   X,
 } from '@phosphor-icons/react';
 import QueueBoard from './QueueBoard.jsx';
-import { createSheetsTicket, validateFileTypes, validateSheetsFiles } from './sheets-api.js';
+import { createSheetsTicket, validateFileSelection, validateSheetsFiles } from './sheets-api.js';
 
 const MACHINES = {
   printer: 'Poster printing',
@@ -127,7 +127,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
 
     const nextFiles = [...files, ...uniqueFiles];
     try {
-      validateFileTypes(nextFiles, machine);
+      validateFileSelection(nextFiles, machine);
       if (SHEETS_API_URL) validateSheetsFiles(nextFiles, machine);
       setFiles(nextFiles);
       setNotice({
@@ -253,13 +253,13 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
             <label>Name <span>Required</span><input name="customerName" autoComplete="name" required maxLength="100" placeholder="Your name" /></label>
             <label>Department <span>Required</span><input name="department" required maxLength="100" placeholder="Decorations, Events, Youth" /></label>
             <label className="field-full">What is this for? <span>Required</span><textarea name="purpose" required maxLength="2000" rows="4" placeholder="Tell us about the event or project." /></label>
-            <label>Needed by <span>Required</span><input name="neededBy" type="date" min={today} required /></label>
+            <label className="date-field">Needed by <span>Required</span><input name="neededBy" type="date" min={today} required /></label>
           </div>
         </fieldset>
 
         <fieldset className="form-card">
           <legend>Job details</legend>
-          <div className="field-grid details-grid">
+          <div className={`field-grid details-grid details-grid-${machine}`}>
             {machine === 'foam' && <label>Foam thickness <span>Required</span><select name="thickness" required defaultValue=""><option value="" disabled>Choose thickness</option><option value="1">1 inch</option><option value="2">2 inches</option></select></label>}
             <label>Quantity <span>Required</span><input name="quantity" type="number" min="1" max="10000" step="1" defaultValue="1" required /></label>
             <label>Width in inches <span>Required</span><input name="width" type="number" min="0.01" max={machine === 'printer' ? '24' : '10000'} step="any" placeholder={machine === 'printer' ? '24' : '20'} required /></label>
@@ -271,7 +271,7 @@ function TicketForm({ machine, onChangeMachine, onTicket }) {
           <div className="dropzone" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
             <UploadSimple size={30} weight="duotone" aria-hidden="true" />
             <strong>Choose files or drop them here</strong>
-            <small>{machine === 'printer' ? 'PDF or JPG' : 'SVG or DXF'} · up to 200 MB total</small>
+            <small>{machine === 'printer' ? 'PDF or JPG' : 'SVG or DXF (10 MB per vector file)'} · up to 200 MB total</small>
             <input type="file" name="files" accept={machine === 'printer' ? '.pdf,.jpg,.jpeg' : '.svg,.dxf'} multiple onChange={event => { addFiles(event.target.files); event.target.value = ''; }} aria-label="Upload artwork files" />
           </div>
 

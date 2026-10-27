@@ -6,11 +6,15 @@ import { createServer, loadEnv } from 'vite';
 
 let viteServer;
 let QueueBoard;
+let fetchQueueApi;
+let readCachedQueue;
 
 test.before(async () => {
   viteServer = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   const mod = await viteServer.ssrLoadModule('/src/QueueBoard.jsx');
   QueueBoard = mod.default;
+  fetchQueueApi = mod.fetchQueueApi;
+  readCachedQueue = mod.readCachedQueue;
 });
 
 test.after(async () => {
@@ -352,6 +356,31 @@ test('ERROR BUG 3.2: backend error details from HTTP 500 or JSON error are swall
     state.error.includes('Database locked') || state.error.includes('503'),
     `Specific backend error details were swallowed and replaced with: "${state.error}"`,
   );
+});
+
+test('queue API uses a browser-compatible timeout and aborts a hung request', async () => {
+  const hungFetch = (_url, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener('abort', () => reject(new Error('aborted')));
+  });
+  await assert.rejects(
+    fetchQueueApi('http://localhost:3000', { fetcher: hungFetch, timeout: 5 }),
+    /timed out/i,
+  );
+});
+
+test('recent queue snapshots load instantly but stale or malformed snapshots are ignored', () => {
+  const entries = new Map();
+  const storage = {
+    getItem: key => entries.get(key) || null,
+    setItem: (key, value) => entries.set(key, value),
+  };
+  const key = 'mandir-queue:test';
+  const data = { ok: true, machines: [] };
+  entries.set(key, JSON.stringify({ savedAt: 1_000_000, data }));
+  assert.deepEqual(readCachedQueue(storage, key, 1_000_001), data);
+  assert.equal(readCachedQueue(storage, key, 1_000_000 + 5 * 60 * 1000 + 1), null);
+  entries.set(key, '{bad json');
+  assert.equal(readCachedQueue(storage, key, 1_000_001), null);
 });
 
 test('PROXY BUG 3.3: vite.config.js does not configure server.proxy for /api', async () => {
