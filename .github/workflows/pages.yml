@@ -31,6 +31,8 @@ jobs:
         run: npm run setup
       - name: Audit production dependencies
         run: npm audit --omit=dev
+      - name: Verify Apps Script deployment
+        run: node scripts/verify-google-script.js
       - name: Run tests
         run: npm test
       - name: Test staff dashboard

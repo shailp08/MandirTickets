@@ -119,7 +119,7 @@ npm run test:staff
 
 ## Verification
 
-Both production builds passed. The backend suite passed 113 tests and the dashboard/library suite passed 194 tests. Checks cover optional phone and size fields, inline and resumable uploads, queue transport fallback, approval gating, editable fields, stale revisions, file-path restrictions, flexible production ordering, privacy, upload validation, material-entry retries, and duplicate-send prevention. The existing local-data audit passed with two tickets, two files, and no orphaned files.
+Both production builds passed. The backend suite passed 115 tests and the dashboard/library suite passed 194 tests. Checks cover the deployed Apps Script health check, optional phone and size fields, inline and resumable uploads, queue transport fallback, approval gating, editable fields, stale revisions, file-path restrictions, flexible production ordering, privacy, upload validation, material-entry retries, and duplicate-send prevention. The existing local-data audit passed with two tickets, two files, and no orphaned files.
 
 Browser checks used a separate sample database and confirmed both configured accounts, removal of the requester paper selector, awaiting-review receipts, admin corrections/approval, staff starting a later job, actual paper usage, pickup status, a visible unconfigured Textbee notification, and decline reasons in private tracking. Sample data and credentials are excluded from the archive. Existing Create React App maintenance warnings remain; builds and tests pass.
 
