@@ -75,8 +75,63 @@ test('request-key tracking distinguishes a pending save from a permanent backend
     { ok: false, pending: false, error: 'The destination Sheet rejected the row.' },
   );
 
+  const committedRow = Array(32).fill('');
+  committedRow[1] = 'P-0001';
+  committedRow[2] = 'Poster printing';
+  committedRow[13] = 'pending-review';
+  committedRow[16] = '2026-10-27T08:00:00.000Z';
+  committedRow[19] = 'ABCD2345';
+  sheet.getRange = () => ({ getValues: () => [committedRow] });
+  isolated.findRow_ = () => 2;
+  isolated.activePosition_ = () => null;
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(isolated.trackTicket_({ requestKey }))),
+    {
+      ok: true,
+      ticket: {
+        ticketNumber: 'P-0001',
+        trackingCode: 'ABCD2345',
+        machineName: 'Poster printing',
+        status: 'pending-review',
+        position: null,
+        reason: '',
+        createdAt: '2026-10-27T08:00:00.000Z',
+      },
+    },
+  );
+
   isolated.clearTicketFailure_(requestKey);
   assert.equal(properties.getProperty(`FAILED_${requestKey}`), null);
+});
+
+test('a transient request-key tracking read failure remains retryable', () => {
+  const isolated = loadContext();
+  isolated.trackTicket_ = () => { throw new Error('temporary Sheet read failure'); };
+  isolated.javascriptResponse_ = (_callback, value) => value;
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(isolated.doGet({ parameter: {
+      callback: 'receiveTicket',
+      action: 'track',
+      requestKey: 'f'.repeat(32),
+    } }))),
+    { ok: false, pending: true, error: 'temporary Sheet read failure' },
+  );
+});
+
+test('GitHub Pages staff ticket reads have a JSONP fallback', () => {
+  const isolated = loadContext();
+  isolated.publicStaffList_ = () => ({ ok: true, tickets: [{ id: 'ticket-1', status: 'queued' }] });
+  isolated.javascriptResponse_ = (_callback, value) => value;
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(isolated.doGet({ parameter: {
+      callback: 'receiveStaffTickets',
+      action: 'staffList',
+      publicStaff: 'true',
+    } }))),
+    { ok: true, tickets: [{ id: 'ticket-1', status: 'queued' }] },
+  );
 });
 
 test('Apps Script backend accepts calendar deadlines and removes the legacy notes marker', () => {
@@ -187,6 +242,36 @@ test('public queue reads only public columns, caches snapshots, and survives cac
   assert.doesNotThrow(() => isolated.invalidatePublicQueueCache_());
 });
 
+test('a cold queue fill rechecks the cache under the mutation lock', () => {
+  let cached = null;
+  let reads = 0;
+  const fresh = { ok: true, machines: [{ id: 'printer', tickets: [{ ticketNumber: 'P-0002' }] }] };
+  const cache = {
+    get: () => cached,
+    put: (_key, value) => { cached = value; },
+    remove: () => { cached = null; },
+  };
+  const lock = {
+    locked: false,
+    waitLock() {
+      this.locked = true;
+      // A mutation completed after the first cache miss but before this read.
+      cached = JSON.stringify(fresh);
+    },
+    hasLock() { return this.locked; },
+    releaseLock() { this.locked = false; },
+  };
+  const isolated = loadContext({
+    CacheService: { getScriptCache: () => cache },
+    LockService: { getScriptLock: () => lock },
+  });
+  isolated.publicQueueRows_ = () => { reads++; return []; };
+
+  assert.deepEqual(JSON.parse(JSON.stringify(isolated.publicWorkshopQueue_())), fresh);
+  assert.equal(reads, 0, 'the stale pre-mutation Sheet snapshot must not overwrite the fresh cache');
+  assert.equal(lock.locked, false);
+});
+
 test('Apps Script re-reads Drive bytes and validates direct PDF, JPG, SVG and DXF uploads', () => {
   const makeContext = content => loadContext({
     ScriptApp: { getOAuthToken: () => 'oauth-token' },
@@ -262,6 +347,58 @@ test('Apps Script re-reads Drive bytes and validates direct PDF, JPG, SVG and DX
   ), /external resources/i);
 });
 
+test('legacy file inspection matches direct-upload envelopes and rejects malformed SVG XML', () => {
+  const isolated = loadContext({ Utilities: { newBlob: bytes => blob(bytes) } });
+  assert.throws(() => isolated.inspectFile_('fake.pdf', [...Buffer.from('%PDF-EVIL\n%%EOF\n')]), /valid PDF/i);
+  assert.throws(() => isolated.inspectFile_('fake.jpg', [0xff, 0xd8, 0x00, 0xff, 0xd9]), /valid JPG/i);
+
+  const invalidSvg = [
+    '<svg xmlns="http://www.w3.org/2000/svg" width="1" width="2"/>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><text>&custom;</text></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 < 1"/></svg>',
+  ];
+  invalidSvg.forEach(value => assert.throws(
+    () => isolated.inspectFile_('bad.svg', [...Buffer.from(value)]),
+    /SVG|attribute|entity|well formed/i,
+  ));
+});
+
+test('inline DXF artwork is validated and written to the configured private Drive folder', () => {
+  const contents = Buffer.from('0\nSECTION\n2\nENTITIES\n0\nLINE\n10\n0\n20\n0\n11\n24\n21\n12\n0\nENDSEC\n0\nEOF\n');
+  const created = [];
+  const isolated = loadContext({
+    Utilities: {
+      base64Decode: value => Array.from(Buffer.from(value, 'base64')),
+      newBlob: (bytes, type, name) => ({ ...blob(bytes), type, name }),
+    },
+    DriveApp: {
+      getFolderById: id => ({
+        createFile(fileBlob) {
+          created.push({ folderId: id, fileBlob });
+          return {
+            getName: () => fileBlob.name,
+            getUrl: () => 'https://drive.google.com/file/d/inline_dxf_file/view',
+            setTrashed() {},
+          };
+        },
+      }),
+    },
+  });
+  const transaction = [];
+  const links = isolated.saveFiles_([{
+    name: 'foam-layout.dxf',
+    type: 'image/vnd.dxf',
+    size: contents.length,
+    data: contents.toString('base64'),
+  }], 'F-0046', '6'.repeat(32), propertiesStore({ UPLOAD_FOLDER_ID: 'private-folder' }), transaction);
+
+  assert.deepEqual([...links], ['F-0046-1-foam-layout.dxf — https://drive.google.com/file/d/inline_dxf_file/view']);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].folderId, 'private-folder');
+  assert.equal(created[0].fileBlob.name, 'F-0046-1-foam-layout.dxf');
+  assert.equal(transaction.length, 1, 'the new Drive file must participate in ticket rollback');
+});
+
 test('upload reservation retries charge daily bytes exactly once per request file', () => {
   const properties = propertiesStore({});
   const isolated = loadContext({
@@ -282,6 +419,28 @@ test('upload reservation retries charge daily bytes exactly once per request fil
   const secondFile = isolated.checkUploadReservation_(properties, requestKey, 1, 1024);
   isolated.commitUploadReservation_(properties, secondFile, 1, 1024);
   assert.equal(properties.getProperty('DAILY_UPLOAD_BYTES'), `2026-10-18:${size + 1024}`);
+});
+
+test('inline vector uploads use the same idempotent daily byte ledger', () => {
+  const requestKey = '8'.repeat(32);
+  const properties = propertiesStore({});
+  const isolated = loadContext({
+    Utilities: { formatDate: () => '2026-10-27' },
+    Session: { getScriptTimeZone: () => 'America/New_York' },
+  });
+  const request = {
+    requestKey,
+    files: [
+      { name: 'one.dxf', size: 2048, data: 'AA==' },
+      { id: 'drive_file_large', name: 'large.dxf', size: 4096 },
+      { name: 'two.svg', size: 1024, data: 'AA==' },
+    ],
+  };
+
+  isolated.reserveInlineUploads_(properties, request);
+  assert.equal(properties.getProperty('DAILY_UPLOAD_BYTES'), '2026-10-27:3072');
+  isolated.reserveInlineUploads_(properties, request);
+  assert.equal(properties.getProperty('DAILY_UPLOAD_BYTES'), '2026-10-27:3072', 'retrying must not consume the quota twice');
 });
 
 test('abandoned upload cleanup trashes only expired pending files and removes stale reservations', () => {
@@ -421,6 +580,39 @@ test('Drive file verification checks ownership, byte count, and checksum and rem
   assert.equal(inspections, 2);
 
   assert.throws(() => isolated.saveFiles_([{ ...receipt[0], md5Checksum: '00000000000000000000000000000000' }], 'P-0001', requestKey, properties), /integrity check/i);
+});
+
+test('all Drive receipts are verified before any pending file is renamed', () => {
+  const requestKey = 'e'.repeat(32);
+  const checksum = 'abcdef0123456789abcdef0123456789';
+  const renamed = [];
+  const metadata = {
+    drive_file_first: { name: '.mandir-pending-first.pdf', size: '100', md5Checksum: checksum, appProperties: { mandirRequestKey: requestKey, mandirIndex: '0' } },
+    drive_file_second: { name: '.mandir-pending-second.pdf', size: '100', md5Checksum: '00000000000000000000000000000000', appProperties: { mandirRequestKey: requestKey, mandirIndex: '1' } },
+  };
+  const isolated = loadContext({
+    ScriptApp: { getOAuthToken: () => 'oauth-token' },
+    UrlFetchApp: { fetch: url => {
+      const id = /files\/([^?]+)/.exec(url)[1];
+      return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ ...metadata[id], parents: ['private-folder'], trashed: false }) };
+    } },
+    DriveApp: {
+      getFolderById: () => ({}),
+      getFileById: id => ({ setName: name => renamed.push([id, name]), getName: () => metadata[id].name, getUrl: () => `https://drive.example/${id}` }),
+    },
+  });
+  isolated.inspectDriveFile_ = () => {};
+  const files = ['first', 'second'].map((name, index) => ({
+    id: `drive_file_${name}`,
+    index,
+    name: `${name}.pdf`,
+    type: 'application/pdf',
+    size: 100,
+    md5Checksum: checksum,
+  }));
+
+  assert.throws(() => isolated.saveFiles_(files, 'P-0001', requestKey, propertiesStore({ UPLOAD_FOLDER_ID: 'private-folder' })), /integrity check/i);
+  assert.deepEqual(renamed, []);
 });
 
 test('duplicate createTicket requests write one Sheet row and reuse the first ticket', () => {

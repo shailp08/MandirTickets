@@ -132,6 +132,8 @@ function formatTicketSheet() {
 function doPost(event) {
   var lock = LockService.getScriptLock();
   var input = {};
+  var fileChanges = [];
+  var rowCommitted = false;
   try {
     var raw = event && event.postData ? event.postData.contents : '';
     input = JSON.parse(raw || (event && event.parameter && event.parameter.payload) || '{}');
@@ -158,11 +160,12 @@ function doPost(event) {
       return jsonResponse_({ ok: true, duplicate: true });
     }
     enforceDailyLimit_(properties);
+    reserveInlineUploads_(properties, request);
 
     var ticketNumber = nextTicketNumber_(sheet, request.machine);
     var trackingCode = randomCode_(8);
     var createdAt = new Date();
-    var uploadedFiles = saveFiles_(request.files, ticketNumber, request.requestKey, properties);
+    var uploadedFiles = saveFiles_(request.files, ticketNumber, request.requestKey, properties, fileChanges);
     var row = [
       Utilities.getUuid(), ticketNumber, MACHINES[request.machine], request.customerName,
       request.department, request.purpose, request.phone, request.quantity,
@@ -176,6 +179,7 @@ function doPost(event) {
     // Refresh the destination cell's validation so an old rule cannot reject the row.
     sheet.getRange(targetRow, 14).setDataValidation(ticketStatusValidation_());
     sheet.getRange(targetRow, 1, 1, HEADERS.length).setValues([row.map(escapeCell_)]);
+    rowCommitted = true;
     SpreadsheetApp.flush();
     invalidatePublicQueueCache_();
     incrementDailyCount_(properties);
@@ -184,6 +188,7 @@ function doPost(event) {
     return jsonResponse_({ ok: true });
   } catch (error) {
     console.error(error && error.stack ? error.stack : error);
+    if (!rowCommitted) rollbackSavedFiles_(fileChanges);
     rememberTicketFailure_(input && input.requestKey, error);
     return jsonResponse_({ ok: false, error: safeError_(error) });
   } finally {
@@ -194,15 +199,17 @@ function doPost(event) {
 function doGet(event) {
   var callback = String(event && event.parameter && event.parameter.callback || '');
   if (!/^[A-Za-z_$][\w$]{0,80}$/.test(callback)) return jsonResponse_({ ok: false, error: 'A valid callback is required.' });
+  var params = event.parameter || {};
   try {
-    var params = event.parameter || {};
     if (params.action === 'queue') return javascriptResponse_(callback, publicWorkshopQueue_());
     if (params.action === 'health') return javascriptResponse_(callback, { ok: true, service: 'Mandir Workshop Tickets' });
+    if (params.action === 'staffList' && params.publicStaff === 'true') return javascriptResponse_(callback, publicStaffList_());
     if (params.action === 'beginUpload') return javascriptResponse_(callback, beginUpload_(params));
     if (params.action !== 'track') return javascriptResponse_(callback, { ok: false, error: 'Unsupported action.' });
     return javascriptResponse_(callback, trackTicket_(params));
   } catch (error) {
-    return javascriptResponse_(callback, { ok: false, error: safeError_(error) });
+    var retryableRequestKey = params.action === 'track' && /^[a-f0-9]{32}$/.test(String(params.requestKey || '').toLowerCase());
+    return javascriptResponse_(callback, { ok: false, pending: retryableRequestKey || undefined, error: safeError_(error) });
   }
 }
 
@@ -211,10 +218,12 @@ function trackTicket_(params) {
   var rowNumber = 0;
   var byRequestKey = String(params.requestKey || '').toLowerCase();
   if (/^[a-f0-9]{32}$/.test(byRequestKey)) {
-    var failure = readTicketFailure_(byRequestKey);
-    if (failure) return { ok: false, pending: false, error: failure.error };
     rowNumber = findRow_(sheet, 21, byRequestKey);
-    if (!rowNumber) return { ok: false, pending: true, error: 'The ticket is still being saved.' };
+    if (!rowNumber) {
+      var failure = readTicketFailure_(byRequestKey);
+      if (failure) return { ok: false, pending: false, error: failure.error };
+      return { ok: false, pending: true, error: 'The ticket is still being saved.' };
+    }
   } else {
     var number = String(params.ticket || '').trim().toUpperCase();
     var code = String(params.code || '').trim().toUpperCase();
@@ -381,12 +390,14 @@ function validateFiles_(files, machine) {
   });
 }
 
-function saveFiles_(files, ticketNumber, requestKey, properties) {
+function saveFiles_(files, ticketNumber, requestKey, properties, transaction) {
   if (!files.length) return [];
   var folderId = properties.getProperty('UPLOAD_FOLDER_ID');
   if (!folderId) throw new Error('The upload folder is not configured. Run setup again.');
   var folder = DriveApp.getFolderById(folderId);
-  return files.map(function(file, index) {
+  // Validate every receipt and every byte envelope before changing any Drive
+  // object. Otherwise a bad later receipt can strand an earlier renamed file.
+  var prepared = files.map(function(file, index) {
     var safeName = file.name.replace(/[^A-Za-z0-9._ -]/g, '_');
     if (file.id) {
       var metadata = getDriveFileMetadata_(file.id);
@@ -397,14 +408,41 @@ function saveFiles_(files, ticketNumber, requestKey, properties) {
       if (String(metadata.md5Checksum || '').toLowerCase() !== file.md5Checksum) throw new Error('An uploaded file failed its integrity check.');
       var uploaded = DriveApp.getFileById(file.id);
       inspectDriveFile_(file, metadata, uploaded);
-      uploaded.setName(ticketNumber + '-' + (index + 1) + '-' + safeName);
-      return uploaded.getName() + ' — ' + uploaded.getUrl();
+      return { file: uploaded, finalName: ticketNumber + '-' + (index + 1) + '-' + safeName, previousName: uploaded.getName() };
     }
     var bytes = Utilities.base64Decode(file.data);
     inspectFile_(file.name, bytes);
-    var blob = Utilities.newBlob(bytes, file.type, ticketNumber + '-' + (index + 1) + '-' + safeName);
-    var saved = folder.createFile(blob);
-    return saved.getName() + ' — ' + saved.getUrl();
+    return { folder: folder, blob: Utilities.newBlob(bytes, file.type, ticketNumber + '-' + (index + 1) + '-' + safeName) };
+  });
+
+  var changes = [];
+  try {
+    var links = prepared.map(function(item) {
+      if (item.file) {
+        item.file.setName(item.finalName);
+        changes.push({ file: item.file, previousName: item.previousName });
+        return item.finalName + ' — ' + item.file.getUrl();
+      }
+      var saved = item.folder.createFile(item.blob);
+      changes.push({ file: saved, trash: true });
+      return saved.getName() + ' — ' + saved.getUrl();
+    });
+    if (Array.isArray(transaction)) Array.prototype.push.apply(transaction, changes);
+    return links;
+  } catch (error) {
+    rollbackSavedFiles_(changes);
+    throw error;
+  }
+}
+
+function rollbackSavedFiles_(changes) {
+  (changes || []).slice().reverse().forEach(function(change) {
+    try {
+      if (change.trash) change.file.setTrashed(true);
+      else change.file.setName(change.previousName);
+    } catch (error) {
+      console.error('Could not roll back an uncommitted upload: ' + safeError_(error));
+    }
   });
 }
 
@@ -617,11 +655,23 @@ function commitUploadReservation_(properties, reservation, index, size) {
   properties.setProperty('DAILY_UPLOAD_BYTES', reservation.dateKey + ':' + (reservation.used + reservation.additionalBytes));
 }
 
+function reserveInlineUploads_(properties, request) {
+  request.files.forEach(function(file, index) {
+    if (file.id) return;
+    var reservation = checkUploadReservation_(properties, request.requestKey, index, file.size);
+    commitUploadReservation_(properties, reservation, index, file.size);
+  });
+}
+
 function inspectFile_(name, bytes) {
   var lower = name.toLowerCase();
-  if (lower.endsWith('.pdf') && !(byte_(bytes[0]) === 37 && byte_(bytes[1]) === 80 && byte_(bytes[2]) === 68 && byte_(bytes[3]) === 70 && /%%EOF\s*$/.test(Utilities.newBlob(bytes.slice(-2048)).getDataAsString('ISO-8859-1')))) throw new Error('A PDF attachment is incomplete or is not a valid PDF.');
+  if (lower.endsWith('.pdf')) {
+    var header = Utilities.newBlob(bytes.slice(0, 16)).getDataAsString('ISO-8859-1');
+    var footer = Utilities.newBlob(bytes.slice(-2048)).getDataAsString('ISO-8859-1');
+    if (!/^%PDF-(1\.[0-7]|2\.0)[\r\n ]/.test(header) || !/%%EOF\s*$/.test(footer)) throw new Error('A PDF attachment is incomplete or is not a valid PDF.');
+  }
   if (lower.endsWith('.png') && !(bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71)) throw new Error('A PNG attachment is not a valid PNG.');
-  if (/\.jpe?g$/.test(lower) && !(byte_(bytes[0]) === 255 && byte_(bytes[1]) === 216 && byte_(bytes[bytes.length - 2]) === 255 && byte_(bytes[bytes.length - 1]) === 217)) throw new Error('A JPG attachment is not a valid JPG.');
+  if (/\.jpe?g$/.test(lower) && !(byte_(bytes[0]) === 255 && byte_(bytes[1]) === 216 && byte_(bytes[2]) === 255 && byte_(bytes[bytes.length - 2]) === 255 && byte_(bytes[bytes.length - 1]) === 217)) throw new Error('A JPG attachment is not a valid JPG.');
   if (/\.tiff?$/.test(lower) && !((bytes[0] === 73 && bytes[1] === 73) || (bytes[0] === 77 && bytes[1] === 77))) throw new Error('A TIFF attachment is not a valid TIFF.');
   if (lower.endsWith('.svg') || lower.endsWith('.dxf')) {
     var text = Utilities.newBlob(bytes).getDataAsString('UTF-8');
@@ -651,6 +701,7 @@ function decodeSvgAttribute_(value) {
 }
 
 function inspectSvgText_(text) {
+  if (text.replace(/&(?:#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/ig, '').indexOf('&') !== -1) throw new Error('SVG contains an invalid entity.');
   var tags = {};
   'svg g defs title desc path rect circle ellipse line polyline polygon text tspan linearGradient radialGradient stop clipPath'.split(' ').forEach(function(name) { tags[name] = true; });
   var attributes = {};
@@ -685,11 +736,16 @@ function inspectSvgText_(text) {
     }
     var rest = body.slice(name.length);
     var sawNamespace = false;
+    var seenAttributes = {};
     while (rest.length) {
       var attribute = /^\s+([A-Za-z_:][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(rest);
       if (!attribute) throw new Error('SVG contains malformed or unsupported attributes.');
       var attributeName = attribute[1];
-      var attributeValue = decodeSvgAttribute_(attribute[2] === undefined ? attribute[3] : attribute[2]);
+      if (seenAttributes[attributeName]) throw new Error('SVG contains duplicate attributes.');
+      seenAttributes[attributeName] = true;
+      var rawAttributeValue = attribute[2] === undefined ? attribute[3] : attribute[2];
+      if (rawAttributeValue.indexOf('<') !== -1) throw new Error('SVG contains malformed attribute values.');
+      var attributeValue = decodeSvgAttribute_(rawAttributeValue);
       var specialAttribute = false;
       if (attributeName === 'xmlns' && attributeValue === 'http://www.w3.org/2000/svg' && name === 'svg') { sawNamespace = true; specialAttribute = true; }
       else if (attributeName === 'xml:space' && (attributeValue === 'default' || attributeValue === 'preserve')) specialAttribute = true;
@@ -895,8 +951,8 @@ function javascriptResponse_(callback, value) {
   return ContentService.createTextOutput(callback + '(' + JSON.stringify(value) + ');').setMimeType(ContentService.MimeType.JAVASCRIPT);
 }
 
-// Staff operations are server-to-server only. Keep WORKSHOP_SHARED_SECRET in
-// Script Properties and the private Node environment, never in the React build.
+// A private server may authenticate with WORKSHOP_SHARED_SECRET. The GitHub
+// Pages-only build deliberately uses the publicStaff path instead.
 function workshopFail_(message, status) { var error = new Error(message); error.status = status || 400; throw error; }
 const fifoCompare = (a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || (a.sequence || Number(a.ticketNumber?.slice(2))) - (b.sequence || Number(b.ticketNumber?.slice(2))) || a.id.localeCompare(b.id);
 function assertTransition(tickets, ticket, status) {
@@ -1038,25 +1094,50 @@ function publicWorkshopQueue_() {
       catch (_removeError) { /* Continue with a fresh Sheet read. */ }
     }
   }
-  var visibleStatuses = { 'pending-review': true, queued: true, 'in-progress': true };
-  var tickets = publicQueueRows_().map(publicQueueTicket_).filter(function(ticket) {
-    return ticket.machine && ticket.ticketNumber && visibleStatuses[ticket.status];
-  }).sort(fifoCompare);
-  var snapshot = { ok: true, updatedAt: new Date().toISOString(), machines: Object.keys(MACHINES).map(function(id) {
-    var visible = tickets.filter(function(ticket) { return ticket.machine === id; });
-    var active = visible.filter(function(ticket) { return ticket.status === 'queued' || ticket.status === 'in-progress'; });
-    var positions = {};
-    active.forEach(function(ticket, index) { positions[ticket.id] = index + 1; });
-    return { id: id, name: MACHINES[id], waiting: active.length, inReview: visible.filter(function(ticket) { return ticket.status === 'pending-review'; }).length, tickets: visible.map(function(ticket) {
-      return { ticketNumber: ticket.ticketNumber, customerName: ticket.customerName, status: ticket.status, position: ticket.status === 'pending-review' ? null : positions[ticket.id] || null };
+  var lock = typeof LockService === 'undefined' ? null : LockService.getScriptLock();
+  if (lock) lock.waitLock(20000);
+  try {
+    // A ticket mutation may have populated or invalidated the cache while this
+    // cold read waited for the same lock. Never publish a pre-mutation snapshot.
+    if (cache) {
+      try {
+        var refreshed = JSON.parse(cache.get(PUBLIC_QUEUE_CACHE_KEY) || 'null');
+        if (refreshed && Array.isArray(refreshed.machines)) return refreshed;
+      } catch (_refreshError) { /* Build a fresh snapshot below. */ }
+    }
+    var visibleStatuses = { 'pending-review': true, queued: true, 'in-progress': true };
+    var tickets = publicQueueRows_().map(publicQueueTicket_).filter(function(ticket) {
+      return ticket.machine && ticket.ticketNumber && visibleStatuses[ticket.status];
+    }).sort(fifoCompare);
+    var snapshot = { ok: true, updatedAt: new Date().toISOString(), machines: Object.keys(MACHINES).map(function(id) {
+      var visible = tickets.filter(function(ticket) { return ticket.machine === id; });
+      var active = visible.filter(function(ticket) { return ticket.status === 'queued' || ticket.status === 'in-progress'; });
+      var positions = {};
+      active.forEach(function(ticket, index) { positions[ticket.id] = index + 1; });
+      return { id: id, name: MACHINES[id], waiting: active.length, inReview: visible.filter(function(ticket) { return ticket.status === 'pending-review'; }).length, tickets: visible.map(function(ticket) {
+        return { ticketNumber: ticket.ticketNumber, customerName: ticket.customerName, status: ticket.status, position: ticket.status === 'pending-review' ? null : positions[ticket.id] || null };
+      }) };
     }) };
-  }) };
-  if (cache) {
-    try { cache.put(PUBLIC_QUEUE_CACHE_KEY, JSON.stringify(snapshot), PUBLIC_QUEUE_CACHE_SECONDS); }
-    catch (_error) { /* A large or unavailable cache must not break the queue. */ }
+    if (cache) {
+      try { cache.put(PUBLIC_QUEUE_CACHE_KEY, JSON.stringify(snapshot), PUBLIC_QUEUE_CACHE_SECONDS); }
+      catch (_error) { /* A large or unavailable cache must not break the queue. */ }
+    }
+    return snapshot;
+  } finally {
+    if (lock && lock.hasLock()) lock.releaseLock();
   }
-  return snapshot;
 }
+function publicStaffList_() {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sheet = ensureTicketSheet_(openBook_());
+    return { ok: true, tickets: workshopRows_(sheet).map(staffTicket_) };
+  } finally {
+    if (lock.hasLock()) lock.releaseLock();
+  }
+}
+
 function staffAction_(input, lock, publicAccess) {
   try {
     if (!publicAccess) {

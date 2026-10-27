@@ -1,7 +1,9 @@
 import 'dotenv/config';
 import crypto from 'node:crypto';
+import { createWriteStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { Transform, pipeline } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import multer from 'multer';
@@ -32,6 +34,7 @@ function positiveInteger(value, fallback, name) {
 const maxUploadBytes = positiveInteger(process.env.MAX_UPLOAD_BYTES, 200 * 1024 * 1024, 'MAX_UPLOAD_BYTES');
 const maxUploadFiles = positiveInteger(process.env.MAX_UPLOAD_FILES, 10, 'MAX_UPLOAD_FILES');
 const maxUploadTotalBytes = positiveInteger(process.env.MAX_UPLOAD_TOTAL_BYTES, 200 * 1024 * 1024, 'MAX_UPLOAD_TOTAL_BYTES');
+const uploadRequestTimeoutMs = positiveInteger(process.env.UPLOAD_REQUEST_TIMEOUT_MS, 15 * 60 * 1000, 'UPLOAD_REQUEST_TIMEOUT_MS');
 if (production && ((!googleMode && !scanner) || !appOrigin?.startsWith('https://') || process.env.COOKIE_SECURE !== 'true' || !process.env.ADMIN_PASSWORD)) {
   throw new Error('Production requires CLAMSCAN_PATH for local uploads, an HTTPS APP_ORIGIN, COOKIE_SECURE=true, and a configured ADMIN_PASSWORD.');
 }
@@ -130,10 +133,39 @@ app.get('/api/track/:number', async (req, res) => {
     reason: ticket.trackingCode && req.query.code === ticket.trackingCode ? ticket.reason || '' : '',
     position: queue.tickets.find(t => t.ticketNumber === ticket.ticketNumber)?.position || null });
 });
-const upload = multer({ limits: { fields: 20, fieldSize: 16384, files: maxUploadFiles, fileSize: maxUploadBytes }, storage: multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
-  filename: (_req, file, cb) => cb(null, crypto.randomUUID() + path.extname(file.originalname).slice(0, 12)),
-}), fileFilter: (_req, file, cb) => {
+const uploadStorage = {
+  _handleFile(req, file, cb) {
+    const filename = crypto.randomUUID() + path.extname(file.originalname).slice(0, 12);
+    const location = path.join(uploadDir, filename);
+    const output = createWriteStream(location, { flags: 'wx' });
+    let size = 0;
+    const limiter = new Transform({
+      transform(chunk, _encoding, done) {
+        const nextTotal = (req.uploadedFileBytes || 0) + chunk.length;
+        if (nextTotal > maxUploadTotalBytes) {
+          const error = new Error(`Attachments must total no more than ${Math.ceil(maxUploadTotalBytes / 1024 / 1024)} MB.`);
+          error.status = 400;
+          done(error);
+          return;
+        }
+        req.uploadedFileBytes = nextTotal;
+        size += chunk.length;
+        done(null, chunk);
+      },
+    });
+    pipeline(file.stream, limiter, output, error => {
+      if (error) {
+        fs.unlink(location).catch(() => {}).finally(() => cb(error));
+        return;
+      }
+      cb(null, { destination: uploadDir, filename, path: location, size });
+    });
+  },
+  _removeFile(_req, file, cb) {
+    fs.unlink(file.path).then(() => cb(), error => cb(error.code === 'ENOENT' ? null : error));
+  },
+};
+const upload = multer({ limits: { fields: 20, fieldSize: 16384, files: maxUploadFiles, fileSize: maxUploadBytes }, storage: uploadStorage, fileFilter: (_req, file, cb) => {
   try { validateFilename(file.originalname); cb(null, true); } catch (error) { cb(error); }
 } });
 const cleanup = files => Promise.all((files || []).map(file => fs.unlink(file.path).catch(() => {})));
@@ -145,8 +177,23 @@ app.post('/api/tickets', (req, res, next) => {
   if (activeUploads >= 4) return res.status(429).json({ error: 'The upload service is busy. Try again shortly.' });
   activeUploads++;
   let released = false;
-  const release = () => { if (!released) { released = true; activeUploads--; } };
+  let uploadTimer;
+  const release = () => {
+    if (!released) {
+      released = true;
+      clearTimeout(uploadTimer);
+      activeUploads--;
+    }
+  };
   req.releaseUploadSlot = release;
+  uploadTimer = setTimeout(() => {
+    if (released) return;
+    res.set('Connection', 'close');
+    res.once('finish', () => req.destroy());
+    res.status(408).json({ error: 'The upload took too long. Check your connection and try again.' });
+    release();
+  }, uploadRequestTimeoutMs);
+  uploadTimer.unref();
   res.once('close', () => { if (!req.processingUpload) release(); });
   res.once('finish', release);
   next();
@@ -235,7 +282,7 @@ const interval = setInterval(() => void background(), 30000);
 interval.unref();
 void background();
 const server = app.listen(Number(process.env.PORT || 3000), process.env.HOST || '0.0.0.0', () => console.log('Mandir Ticket Desk ready on port ' + server.address().port));
-server.requestTimeout = 0; // Stream large uploads without an application timeout.
+server.requestTimeout = uploadRequestTimeoutMs;
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
   clearInterval(interval); clearInterval(authCleanup);
   server.close(() => process.exit(0));

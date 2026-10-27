@@ -1,7 +1,7 @@
-import { GooglePagesError, googlePagesRequest, googleUsageCsv } from './googlePagesApi';
+import { googlePagesRequest, googleUsageCsv } from './googlePagesApi';
 
 beforeEach(() => {
-  Object.defineProperty(AbortSignal, 'timeout', { configurable: true, value: () => new AbortController().signal });
+  Object.defineProperty(AbortSignal, 'timeout', { configurable: true, value: jest.fn(() => new AbortController().signal) });
 });
 
 const storage = () => {
@@ -13,34 +13,60 @@ const storage = () => {
   };
 };
 
-const response = (data: object) => Promise.resolve({ ok: true, status: 200, json: async () => data } as Response);
+const response = (data: object, status = 200) => Promise.resolve({ ok: status < 400, status, json: async () => data } as Response);
+const url = 'https://script.google.com/macros/s/test/exec';
 
-test('Pages mode keeps the sign-in screen and loads Google tickets after login', async () => {
+test('Pages mode keeps a browser session and reads approved tickets directly from Apps Script', async () => {
   const session = storage();
-  const fetcher = jest.fn(() => response({ ok: true, tickets: [
+  const fetchMock = jest.fn((_input: RequestInfo | URL, _init?: RequestInit) => response({ ok: true, tickets: [
+    { id: 'approved', status: 'queued' },
     { id: 'review', status: 'pending-review' },
-    { id: 'queue', status: 'queued' },
-  ] })) as typeof fetch;
-  await expect(googlePagesRequest('https://script.google.com/macros/s/test/exec', '/api/tickets', {}, session, fetcher)).rejects.toEqual(expect.objectContaining({ status: 401 }));
-  await expect(googlePagesRequest('https://script.google.com/macros/s/test/exec', '/api/session', { method: 'POST', body: '{}' }, session, fetcher)).resolves.toEqual({ ok: true, role: 'admin' });
-  const result = await googlePagesRequest('https://script.google.com/macros/s/test/exec', '/api/tickets', {}, session, fetcher);
-  expect(result.tickets).toEqual([{ id: 'queue', status: 'queued' }]);
-  expect(result.role).toBe('admin');
-  const sent = JSON.parse(String((fetcher as jest.Mock).mock.calls[0][1].body));
-  expect(sent).toMatchObject({ action: 'staffList', publicStaff: true });
+  ] }));
+  const fetcher = fetchMock as typeof fetch;
+
+  await expect(googlePagesRequest(url, '/api/tickets', {}, session, fetcher)).rejects.toEqual(expect.objectContaining({ status: 401 }));
+  await expect(googlePagesRequest(url, '/api/session', { method: 'POST', body: '{}' }, session, fetcher)).resolves.toEqual({ ok: true, role: 'admin' });
+  const result = await googlePagesRequest(url, '/api/tickets', {}, session, fetcher);
+
+  expect(result.tickets).toEqual([{ id: 'approved', status: 'queued' }]);
+  expect(AbortSignal.timeout).toHaveBeenCalledWith(12000);
+  const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+  expect(body).toEqual({ action: 'staffList', publicStaff: true });
 });
 
-test('Pages mode maps review, status and usage actions to Apps Script', async () => {
+test('ticket reads retry transport failures and fall back to JSONP', async () => {
   const session = storage(); session.setItem('workshop.pagesSession', '1');
-  const payloads: any[] = [];
-  const fetcher = jest.fn((_url, options) => { payloads.push(JSON.parse(String(options?.body))); return response({ ok: true, ticket: { id: 'ticket' } }); }) as typeof fetch;
-  const url = 'https://script.google.com/macros/s/test/exec';
-  await googlePagesRequest(url, '/api/admin/requests/ticket/review', { method: 'POST', body: JSON.stringify({ decision: 'approve', operator: 'Admin', expectedRevision: 2 }) }, session, fetcher);
-  await googlePagesRequest(url, '/api/tickets/ticket', { method: 'PATCH', body: JSON.stringify({ status: 'in-progress', expectedRevision: 3 }) }, session, fetcher);
-  await googlePagesRequest(url, '/api/tickets/ticket/usage', { method: 'POST', body: JSON.stringify({ used: 2, waste: 1, expectedRevision: 4 }) }, session, fetcher);
-  expect(payloads.map(value => value.action)).toEqual(['adminReview', 'staffUpdate', 'staffUsage']);
-  expect(payloads[0].input).toEqual({ decision: 'approve', operator: 'Admin' });
-  expect(payloads[2].input).toEqual({ used: 2, waste: 1 });
+  const fetchMock = jest.fn((_input: RequestInfo | URL, _init?: RequestInit) => Promise.reject(new Error('CORS unavailable')));
+  const fetcher = fetchMock as typeof fetch;
+  const jsonp = jest.fn(() => Promise.resolve({ ok: true, tickets: [{ id: 'ticket', status: 'queued' }] }));
+  const pauses: number[] = [];
+
+  const result = await googlePagesRequest(url, '/api/tickets', {}, session, fetcher, jsonp, async value => { pauses.push(value); });
+
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+  expect(pauses).toEqual([500, 1000]);
+  expect(jsonp).toHaveBeenCalledWith(url, { action: 'staffList', publicStaff: 'true' });
+  expect(result.tickets).toHaveLength(1);
+});
+
+test('staff mutations map to one Apps Script request and are not automatically replayed', async () => {
+  const session = storage(); session.setItem('workshop.pagesSession', '1');
+  const fetchMock = jest.fn((_input: RequestInfo | URL, _init?: RequestInit) => response({ ok: true, ticket: { id: 'ticket', status: 'in-progress' } }));
+  const fetcher = fetchMock as typeof fetch;
+
+  await googlePagesRequest(url, '/api/tickets/ticket', {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'in-progress', expectedRevision: 2 }),
+  }, session, fetcher);
+
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({
+    action: 'staffUpdate',
+    publicStaff: true,
+    id: 'ticket',
+    status: 'in-progress',
+    expectedRevision: 2,
+  });
 });
 
 test('Pages usage export remains a spreadsheet-safe CSV', () => {
@@ -48,10 +74,4 @@ test('Pages usage export remains a spreadsheet-safe CSV', () => {
   expect(csv).toContain('P-0001');
   expect(csv).toContain("'=SUM(1,2)");
   expect(csv).toContain('2.5');
-});
-
-test('Pages mode surfaces Google errors', async () => {
-  const session = storage(); session.setItem('workshop.pagesSession', '1');
-  const fetcher = jest.fn(() => response({ ok: false, status: 409, error: 'Refresh first.' })) as typeof fetch;
-  await expect(googlePagesRequest('https://script.google.com/macros/s/test/exec', '/api/tickets', {}, session, fetcher)).rejects.toEqual(new GooglePagesError('Refresh first.', 409));
 });

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import net from 'node:net';
 import { createStore, validateTicket, publicQueue, machines } from '../lib/store.js';
 import { createSheetsSync, csv } from '../lib/sheets.js';
 
@@ -101,9 +102,9 @@ test('reopening clears the old ready timestamp and survives a restart', async t 
   assert.equal(reopened.completedAt,null);
   assert.equal((await createStore(dir)).list()[0].status,'queued');
 });
-test('HTTP flow: auth, uploads, receipt, privacy, tracking, status and export',async t=>{
+test('HTTP flow: auth, bounded uploads, receipt, privacy, tracking, status and export',async t=>{
   const dir=await temp(t);
-  const child=spawn(process.execPath,['server.js'],{cwd:new URL('..',import.meta.url),env:{...process.env,NODE_ENV:'test',APP_ORIGIN:'https://desk.example',COOKIE_SECURE:'true',CLAMSCAN_PATH:'',PORT:'0',DATA_DIR:dir,ADMIN_USERNAME:'admin',ADMIN_PASSWORD:'test-only-secret',STAFF_USERNAME:'workshop',STAFF_PASSWORD:'staff-test-secret',TEXTBEE_API_KEY:'',TEXTBEE_DEVICE_ID:'',WORKSHOP_GOOGLE_SCRIPT_URL:'',SHEETS_WEBHOOK_URL:'',SHEETS_SHARED_SECRET:'',MAX_UPLOAD_BYTES:'1048576',MAX_UPLOAD_FILES:'3',MAX_UPLOAD_TOTAL_BYTES:'1500000'},stdio:['ignore','pipe','pipe']});
+  const child=spawn(process.execPath,['server.js'],{cwd:new URL('..',import.meta.url),env:{...process.env,NODE_ENV:'test',APP_ORIGIN:'https://desk.example',COOKIE_SECURE:'true',CLAMSCAN_PATH:'',PORT:'0',DATA_DIR:dir,ADMIN_USERNAME:'admin',ADMIN_PASSWORD:'test-only-secret',STAFF_USERNAME:'workshop',STAFF_PASSWORD:'staff-test-secret',TEXTBEE_API_KEY:'',TEXTBEE_DEVICE_ID:'',WORKSHOP_GOOGLE_SCRIPT_URL:'',SHEETS_WEBHOOK_URL:'',SHEETS_SHARED_SECRET:'',MAX_UPLOAD_BYTES:'1048576',MAX_UPLOAD_FILES:'3',MAX_UPLOAD_TOTAL_BYTES:'1500000',UPLOAD_REQUEST_TIMEOUT_MS:'250'},stdio:['ignore','pipe','pipe']});
   t.after(async()=>{const exited=once(child,'exit');child.kill();await exited;});
   const port=await new Promise((resolve,reject)=>{child.stdout.on('data',d=>{const m=String(d).match(/port (\d+)/);if(m)resolve(m[1]);});child.once('error',reject);child.once('exit',()=>reject(new Error('Server exited before listening.')));});
   const base='http://127.0.0.1:'+port;
@@ -123,6 +124,18 @@ test('HTTP flow: auth, uploads, receipt, privacy, tracking, status and export',a
   assert.equal((await fs.readdir(path.join(dir,'uploads'))).length,0);
   const response=await fetch(base+'/api/tickets',{method:'POST',headers:{'idempotency-key':'http-test-request-123'},body:form()});
   assert.equal(response.status,201);const receipt=await response.json();assert.equal(receipt.ticket.ticketNumber,'P-0001');assert.equal(receipt.ticket.status,'pending-review');assert.equal(receipt.ticket.position,null);assert.ok(receipt.ticket.trackingCode);
+  const halfOpen = () => new Promise((resolve,reject) => {
+    const socket=net.createConnection({host:'127.0.0.1',port:Number(port)},()=>{
+      socket.write('POST /api/tickets HTTP/1.1\r\nHost: 127.0.0.1\r\nIdempotency-Key: half-open-request-123\r\nContent-Type: multipart/form-data; boundary=hold\r\nContent-Length: 100000\r\nConnection: keep-alive\r\n\r\n--hold\r\n');
+      resolve(socket);
+    });
+    socket.once('error',reject);
+  });
+  const stalled=await Promise.all(Array.from({length:4},halfOpen));
+  t.after(()=>stalled.forEach(socket=>socket.destroy()));
+  await new Promise(resolve=>setTimeout(resolve,50));
+  assert.equal((await fetch(base+'/api/tickets',{method:'POST',headers:{'idempotency-key':'http-test-request-123'},body:form()})).status,429);
+  await new Promise(resolve=>setTimeout(resolve,350));
   const retry=await fetch(base+'/api/tickets',{method:'POST',headers:{'idempotency-key':'http-test-request-123'},body:form()});assert.equal(retry.status,200);
   const list=await(await fetch(base+'/api/tickets',{headers:{cookie}})).json();assert.equal(list.tickets.length,0);assert.equal(list.sheets.configured,false);
   const adminList=await(await fetch(base+'/api/admin/requests',{headers:{cookie}})).json();

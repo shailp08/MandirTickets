@@ -2,6 +2,8 @@ export const SHEETS_MAX_FILES = 5;
 export const SHEETS_MAX_FILE_BYTES = 200 * 1024 * 1024;
 export const SHEETS_MAX_TOTAL_BYTES = 200 * 1024 * 1024;
 export const SHEETS_MAX_VECTOR_FILE_BYTES = 10 * 1024 * 1024;
+export const SHEETS_MAX_INLINE_FILE_BYTES = 5 * 1024 * 1024;
+export const SHEETS_MAX_INLINE_TOTAL_BYTES = 10 * 1024 * 1024;
 
 const DRIVE_CHUNK_BYTES = 10 * 1024 * 1024;
 const DRIVE_MAX_RECOVERY_ATTEMPTS = 5;
@@ -10,6 +12,7 @@ const SHEETS_REQUEST_ATTEMPTS = 5;
 const SHEETS_CONFIRMATION_ATTEMPTS = 12;
 const SHEETS_CREATE_RETRY_ATTEMPT = 5;
 const SHEETS_UPLOAD_START_TIMEOUT = 45000;
+const SHEETS_CREATE_POST_TIMEOUT = 45000;
 const uploadedFilesByRequest = new Map();
 const wait = milliseconds => new Promise(resolve => window.setTimeout(resolve, milliseconds));
 
@@ -94,6 +97,53 @@ function sheetsJsonpAttempt(url, parameters, timeout) {
   });
 }
 
+function sheetsFetchAttempt(url, parameters, timeout, {
+  fetcher = fetch,
+  setTimer = (callback, milliseconds) => window.setTimeout(callback, milliseconds),
+  clearTimer = timer => window.clearTimeout(timer),
+} = {}) {
+  const callback = `__mandirTicket_${crypto.getRandomValues(new Uint32Array(2)).join('_')}`;
+  const requestUrl = new URL(url);
+  Object.entries({ ...parameters, callback, cache: Date.now().toString() })
+    .forEach(([key, value]) => requestUrl.searchParams.set(key, value));
+  const controller = new AbortController();
+  const timer = setTimer(() => controller.abort(), timeout);
+
+  return fetcher(requestUrl, {
+    method: 'GET',
+    mode: 'cors',
+    cache: 'no-store',
+    redirect: 'follow',
+    signal: controller.signal,
+  }).then(async response => {
+    if (!response.ok) throw new Error(`The ticket service returned HTTP ${response.status}.`);
+    const source = (await response.text()).trim();
+    const prefix = `${callback}(`;
+    if (source.startsWith(prefix) && source.endsWith(');')) {
+      return JSON.parse(source.slice(prefix.length, -2));
+    }
+    // Apps Script returns JSON for failures that happen before callback
+    // validation. Accept it so the real backend message is not hidden.
+    return JSON.parse(source);
+  }).finally(() => clearTimer(timer));
+}
+
+async function sheetsRead(url, parameters, timeout, {
+  attempts = SHEETS_REQUEST_ATTEMPTS,
+  pause = wait,
+  fetchAttempt = sheetsFetchAttempt,
+  jsonpAttempt = sheetsJsonpAttempt,
+} = {}) {
+  // Some privacy extensions block cross-site script tags while allowing CORS
+  // reads; other older browsers do the reverse. Alternate transports across
+  // retries so queue reads and upload handshakes can recover in either case.
+  return retrySheetsTransport(attempt => (
+    attempt % 2
+      ? fetchAttempt(url, parameters, timeout)
+      : jsonpAttempt(url, parameters, timeout)
+  ), { attempts, pause });
+}
+
 export async function retrySheetsTransport(request, { attempts = SHEETS_REQUEST_ATTEMPTS, pause = wait } = {}) {
   const attemptCount = Math.max(1, Math.floor(attempts));
   let lastError;
@@ -120,22 +170,56 @@ export async function fetchSheetsQueue(url, {
   timeout = 12000,
   attempts = 3,
   pause = wait,
+  fetchAttempt = sheetsFetchAttempt,
+  jsonpAttempt = sheetsJsonpAttempt,
 } = {}) {
   try {
-    return await retrySheetsTransport(
-      () => sheetsJsonpAttempt(url, { action: 'queue' }, timeout),
-      { attempts, pause },
-    );
+    return await sheetsRead(url, { action: 'queue' }, timeout, {
+      attempts,
+      pause,
+      fetchAttempt,
+      jsonpAttempt,
+    });
   } catch (cause) {
     throw new Error('The live queue is taking too long to respond.', { cause });
   }
 }
 
+export async function postSheetsTicket(url, request, {
+  fetcher = fetch,
+  timeout = SHEETS_CREATE_POST_TIMEOUT,
+  setTimer = (callback, milliseconds) => window.setTimeout(callback, milliseconds),
+  clearTimer = timer => window.clearTimeout(timer),
+} = {}) {
+  const controller = new AbortController();
+  const timer = setTimer(() => controller.abort(), timeout);
+  try {
+    return await fetcher(url, {
+      method: 'POST',
+      mode: 'no-cors',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(request),
+      signal: controller.signal,
+    });
+  } catch (cause) {
+    if (controller.signal.aborted) throw new Error('Google took too long to save the ticket.', { cause });
+    throw cause;
+  } finally {
+    clearTimer(timer);
+  }
+}
+
 export async function trackSheetsTicket(url, { ticket, code, requestKey } = {}) {
-  const response = await sheetsJsonp(url, {
-    action: 'track',
-    ...(requestKey ? { requestKey } : { ticket: String(ticket || '').trim().toUpperCase(), code: String(code || '').trim().toUpperCase() }),
-  });
+  let response;
+  try {
+    response = await sheetsRead(url, {
+      action: 'track',
+      ...(requestKey ? { requestKey } : { ticket: String(ticket || '').trim().toUpperCase(), code: String(code || '').trim().toUpperCase() }),
+    }, 15000);
+  } catch (cause) {
+    throw new Error('Google did not respond after several attempts. Your form and files are still here, so wait a moment and choose Try again.', { cause });
+  }
   if (!response?.ok) {
     const error = new Error(response?.error || 'The ticket could not be found.');
     error.retryable = response?.pending === true;
@@ -267,6 +351,18 @@ export async function uploadDriveFile(sessionUrl, file, onProgress, {
   }
 }
 
+export async function encodeInlineFile(file) {
+  if (!file || typeof file.arrayBuffer !== 'function') throw new Error('The selected file could not be read. Choose it again and retry.');
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (bytes.byteLength !== file.size) throw new Error('The selected file changed while it was being read. Choose it again and retry.');
+  let binary = '';
+  const chunkSize = 32 * 1024;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)));
+  }
+  return btoa(binary);
+}
+
 async function uploadFiles(url, details, files, onProgress) {
   validateSheetsFiles(files, details.machine);
   const fingerprint = JSON.stringify({
@@ -300,12 +396,30 @@ async function uploadFiles(url, details, files, onProgress) {
   const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
   const uploaded = cached.uploaded.slice();
   let completedBytes = uploaded.reduce((sum, file) => sum + file.size, 0);
+  let inlineBytes = uploaded.reduce((sum, file) => sum + (file.data ? file.size : 0), 0);
   if (completedBytes) onProgress?.(Math.max(1, Math.round((completedBytes / totalBytes) * 90)));
   for (let index = uploaded.length; index < files.length; index++) {
     const file = files[index];
+    const canUploadInline = /\.(?:svg|dxf)$/i.test(file.name)
+      && file.size <= SHEETS_MAX_INLINE_FILE_BYTES
+      && inlineBytes + file.size <= SHEETS_MAX_INLINE_TOTAL_BYTES;
+    if (canUploadInline) {
+      const data = await encodeInlineFile(file);
+      uploaded.push({
+        name: file.name,
+        type: file.type || 'application/octet-stream',
+        size: file.size,
+        data,
+      });
+      cached.uploaded = uploaded.slice();
+      inlineBytes += file.size;
+      completedBytes += file.size;
+      onProgress?.(Math.max(1, Math.round((completedBytes / totalBytes) * 90)));
+      continue;
+    }
     let response;
     try {
-      response = await sheetsJsonp(url, {
+      response = await sheetsRead(url, {
         action: 'beginUpload',
         requestKey: details.requestKey,
         startedAt: details.startedAt,
@@ -358,13 +472,7 @@ export async function createSheetsTicket(url, details, files, onProgress) {
     notes: compatibleNotes,
     files: uploadedFiles,
   };
-  const sendCreateRequest = () => fetch(url, {
-    method: 'POST',
-    mode: 'no-cors',
-    cache: 'no-store',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(createRequest),
-  });
+  const sendCreateRequest = () => postSheetsTicket(url, createRequest);
   await retrySheetsTransport(sendCreateRequest, { attempts: 3 });
   onProgress?.(95);
   let lastError;

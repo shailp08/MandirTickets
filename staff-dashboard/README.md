@@ -1,12 +1,12 @@
 # Delaware Mandir Workshop Desk
 
-Authenticated staff interface for the MandirTickets backend. Printing and foam-cutting tabs share the live Google-backed ticket records through a private server connection. The desk includes an admin review inbox, editable request details, approval/decline decisions, flexible work queues, ticket details and artwork links, pickup workflow and Textbee notification status, material/waste entries, usage totals, and CSV export.
+Staff interface for the MandirTickets backend. Printing and foam-cutting tabs share the live Google-backed ticket records directly through Apps Script when hosted on GitHub Pages. The desk includes an admin review inbox, editable request details, approval/decline decisions, flexible work queues, ticket details and artwork links, pickup workflow, material/waste entries, usage totals, and CSV export.
 
 ## Build and serve
 
-Use Node 22+. Install dependencies with `npm ci`. From the parent `MandirTickets` folder run `npm run build:staff`, then start that server. The dashboard is served at `/staff/`, alongside its authenticated API.
+Use Node 22+. Install dependencies with `npm ci`. From the parent `MandirTickets` folder run `npm run build:pages`; the dashboard is packaged under `/staff/` for GitHub Pages.
 
-See `../docs/workshop-setup.md` for the complete online rollout. GitHub Pages hosts the staff frontend at `/MandirTickets/staff/`. The Pages workflow supplies the existing Google Apps Script URL directly to the dashboard, so the review queue, status updates, and material ledger work without a separate Node host after the updated Apps Script source is published. The optional private-server mode remains available through `STAFF_API_URL`.
+See `../docs/workshop-setup.md` for the complete online rollout. The Pages workflow passes `VITE_GOOGLE_SCRIPT_URL` to the staff build as `REACT_APP_GOOGLE_SCRIPT_URL`, so ticket reads and workshop actions do not require a separate Node host. The optional Node-server mode remains available through `STAFF_API_URL`.
 
 ## Tests
 

@@ -3,16 +3,19 @@ import assert from 'node:assert/strict';
 import {
   createSheetsTicket,
   driveNextOffset,
+  encodeInlineFile,
   fetchSheetsQueue,
   legacySheetsDeadline,
   legacySheetsNotes,
   retrySheetsTransport,
+  postSheetsTicket,
   uploadDriveFile,
   validateFileTypes,
   validateNeededByDate,
   validateSheetsFiles,
   SHEETS_MAX_FILE_BYTES,
   SHEETS_MAX_FILES,
+  SHEETS_MAX_INLINE_FILE_BYTES,
   SHEETS_MAX_TOTAL_BYTES,
   SHEETS_MAX_VECTOR_FILE_BYTES,
 } from '../src/sheets-api.js';
@@ -103,7 +106,18 @@ async function withBrowserPipeline({ jsonp, xhr = [], onPost = () => {} }, opera
     },
   };
   globalThis.XMLHttpRequest = FakeXMLHttpRequest;
-  globalThis.fetch = async (_url, options) => {
+  globalThis.fetch = async (url, options) => {
+    if (options.method === 'GET') {
+      const requestUrl = new URL(url);
+      const parameters = Object.fromEntries(requestUrl.searchParams);
+      const response = jsonp(parameters);
+      if (response?.transportError) throw new Error('GET transport failed');
+      return {
+        ok: true,
+        status: 200,
+        text: async () => `${parameters.callback}(${JSON.stringify(response)});`,
+      };
+    }
     onPost(JSON.parse(options.body));
     return {};
   };
@@ -124,6 +138,16 @@ test('client accepts only the formats for the selected request type', () => {
   assert.doesNotThrow(() => validateSheetsFiles([file('letters.svg'), file('layout.dxf')], 'foam'));
   assert.throws(() => validateFileTypes([file('layout.svg')], 'printer'), /PDF or JPG/i);
   assert.throws(() => validateFileTypes([file('photo.jpg')], 'foam'), /SVG or DXF/i);
+});
+
+test('small vector files are encoded losslessly for server-side Drive storage', async () => {
+  const bytes = Uint8Array.from([0, 10, 13, 32, 65, 127, 128, 255]);
+  const data = await encodeInlineFile({ size: bytes.length, arrayBuffer: async () => bytes.buffer });
+  assert.deepEqual(Uint8Array.from(Buffer.from(data, 'base64')), bytes);
+  await assert.rejects(
+    encodeInlineFile({ size: bytes.length + 1, arrayBuffer: async () => bytes.buffer }),
+    /changed while it was being read/i,
+  );
 });
 
 test('Google Sheets client enforces count, extension, per-file, and total limits', () => {
@@ -174,6 +198,27 @@ test('Google Sheets client stops retrying after the final transport failure', as
   assert.equal(calls, 3);
 });
 
+test('ticket creation POST aborts when Google never settles the request', async () => {
+  let aborts = 0;
+  const fetcher = (_url, options) => new Promise((_resolve, reject) => {
+    options.signal.addEventListener('abort', () => {
+      aborts++;
+      reject(options.signal.reason);
+    });
+  });
+
+  await assert.rejects(
+    postSheetsTicket('https://script.example/exec', { action: 'createTicket' }, {
+      fetcher,
+      timeout: 1,
+      setTimer: callback => { queueMicrotask(callback); return 1; },
+      clearTimer: () => {},
+    }),
+    /too long/i,
+  );
+  assert.equal(aborts, 1);
+});
+
 test('live queue uses a short retry budget and recovers from one transport failure', async () => {
   let calls = 0;
   const result = await withBrowserPipeline({
@@ -199,6 +244,25 @@ test('live queue tolerates two cold-start transport failures before showing an e
   }, () => fetchSheetsQueue('https://script.example/exec'));
 
   assert.equal(calls, 3);
+  assert.deepEqual(result.machines, []);
+});
+
+test('live queue alternates CORS and JSONP so either browser transport can recover', async () => {
+  const transports = [];
+  const result = await fetchSheetsQueue('https://script.example/exec', {
+    attempts: 3,
+    pause: async () => {},
+    fetchAttempt: async () => {
+      transports.push('fetch');
+      throw new Error('privacy extension blocked the CORS request');
+    },
+    jsonpAttempt: async () => {
+      transports.push('jsonp');
+      return { ok: true, machines: [] };
+    },
+  });
+
+  assert.deepEqual(transports, ['fetch', 'jsonp']);
   assert.deepEqual(result.machines, []);
 });
 
@@ -512,4 +576,68 @@ test('ticket creation defaults to no rush when the customer form has no needed-b
   assert.equal(posted.neededBy, 'No rush');
   assert.equal(Object.hasOwn(posted, 'neededByDate'), false);
   assert.equal(posted.notes, 'Use the blue foam.');
+});
+
+test('small DXF tickets bypass the fragile browser Drive handshake', async () => {
+  const contents = Buffer.from('0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n');
+  const artwork = {
+    name: 'foam-layout.dxf',
+    size: contents.length,
+    type: 'image/vnd.dxf',
+    lastModified: 1770000003000,
+    arrayBuffer: async () => contents.buffer.slice(contents.byteOffset, contents.byteOffset + contents.byteLength),
+  };
+  let posted;
+
+  await withBrowserPipeline({
+    jsonp(parameters) {
+      assert.notEqual(parameters.action, 'beginUpload', 'a small DXF must not depend on a browser Drive session');
+      return { ok: true, ticket: { ticketNumber: 'F-0046', trackingCode: 'EFGH6789', status: 'pending-review' } };
+    },
+    onPost: body => { posted = body; },
+  }, async () => {
+    const details = {
+      ...requestDetails('66666666666666666666666666666666'),
+      machine: 'foam',
+      thickness: '2',
+    };
+    await createSheetsTicket('https://script.example/exec', details, [artwork]);
+  });
+
+  assert.deepEqual(posted.files, [{
+    name: artwork.name,
+    type: artwork.type,
+    size: artwork.size,
+    data: contents.toString('base64'),
+  }]);
+});
+
+test('vectors above the inline limit retain the resumable Drive path', async () => {
+  const artwork = {
+    name: 'large-layout.dxf',
+    size: SHEETS_MAX_INLINE_FILE_BYTES + 1,
+    type: 'application/dxf',
+    lastModified: 1770000004000,
+    slice: (start, end) => ({ size: end - start }),
+  };
+  let beginUploads = 0;
+
+  await withBrowserPipeline({
+    jsonp(parameters) {
+      if (parameters.action === 'beginUpload') {
+        beginUploads++;
+        return { ok: true, sessionUrl: 'https://www.googleapis.com/upload/large-dxf-session' };
+      }
+      return { ok: true, ticket: { ticketNumber: 'F-0047', trackingCode: 'FGHJ789A', status: 'pending-review' } };
+    },
+    xhr: [{ status: 200, body: { id: 'drive_file_large_dxf', md5Checksum: '0123456789abcdef0123456789abcdef' } }],
+  }, async () => {
+    await createSheetsTicket('https://script.example/exec', {
+      ...requestDetails('77777777777777777777777777777777'),
+      machine: 'foam',
+      thickness: '2',
+    }, [artwork]);
+  });
+
+  assert.equal(beginUploads, 1);
 });

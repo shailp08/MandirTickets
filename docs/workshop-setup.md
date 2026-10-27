@@ -13,13 +13,13 @@ All project files are inside MandirTickets, including the staff-dashboard subfol
 
 The workflow does not send commands to the printer or foam cutter. Trained volunteers operate the machines. Material totals measure recorded consumption, not remaining inventory, ink levels, or automatic machine telemetry.
 
-## Accounts
+## GitHub Pages staff access
 
-The requested **admin** and **workshop** accounts are configured in the original MandirTickets folder’s private `.env` file. Both logins were verified in the local browser. Passwords are excluded from this guide, the downloadable source archive, source control, and frontend builds.
+The GitHub Pages deployment connects the staff dashboard directly to Apps Script. Its sign-in screen is a browser-local gate and does not require `WORKSHOP_SHARED_SECRET`, `APP_ORIGIN`, `STAFF_API_URL`, or a Node server. The Pages workflow passes the existing `VITE_GOOGLE_SCRIPT_URL` into both frontend builds.
 
-Both accounts use `/staff/`. The admin account opens the review workspace and can also use production tools. The workshop account can only access approved production tickets, files, and material records. Admin endpoints enforce permission checks on the server. The typed volunteer name is a history label, not an individually verified account identity.
+After entering the staff screen, the dashboard opens the review workspace and production tools. The typed volunteer name is saved as a history label. Ticket reads retry transient Apps Script failures and have a JSONP fallback; writes use a single POST so an uncertain response cannot automatically replay a status or review mutation.
 
-On a new host, enter the same credentials in the host’s private environment settings. The archive intentionally does not contain them.
+The optional Node deployment remains in the repository but is not required for this mode.
 
 ## Textbee free tier
 
@@ -57,18 +57,16 @@ To find the editor, open the ticket Google Sheet and choose **Extensions → App
 
 1. Back up the ticket Sheet and existing Apps Script source; retain the previous deployment version for rollback.
 2. Replace the existing ticket script with `MandirTickets/integrations/google-sheets.gs`. Preserve existing Script Properties, Sheet ID, upload-folder ID, and allowed upload origins. **Do not run new-system setup or create a replacement Sheet.**
-3. Add a Script Property `WORKSHOP_SHARED_SECRET` containing a random value of at least 32 characters. Put the same value in the staff server’s private environment. This is separate from login passwords and Textbee credentials.
-4. Publish a new version of the **existing deployment**, keeping its `/exec` URL. The script preserves the legacy email and cost columns, then stores Material usage, Staff history, SMS consent, and Review reason after them. Existing receipt codes, IDs, timestamps, costs, and Drive links are preserved.
-5. Before opening the staff desk, run `holdUnreviewedQueueForAdminReview` from the script editor if the existing queued backlog has not already been approved. It moves only unstarted queued requests without an approval history into review. Active, ready, collected, and cancelled work is preserved. It is safe to rerun without duplicating these holds. Direct Sheet changes bypass application review and revision controls; use the app afterward.
-6. Deploy the private server over HTTPS with a persistent data disk and the settings below. Serve the dashboard and API together. GitHub Pages cannot run this private server.
-7. Deploy the updated public MandirTickets frontend through its existing GitHub Pages workflow, retaining `VITE_GOOGLE_SCRIPT_URL`. Update Apps Script first so public submissions enter review and accept the new form without requester-selected paper.
-8. Verify a clearly labeled real request for each machine with the coordinator: submit, track awaiting review, edit/approve, verify staff visibility, start, log material, mark ready, confirm Textbee delivery, collect. Also test decline with a private reason and confirm the staff account cannot open the admin inbox.
+3. Publish a new version of the **existing deployment**, keeping its `/exec` URL. The script preserves the legacy email and cost columns, then stores Material usage, Staff history, SMS consent, and Review reason after them. Existing receipt codes, IDs, timestamps, costs, and Drive links are preserved.
+4. Before opening the staff desk, run `holdUnreviewedQueueForAdminReview` from the script editor if the existing queued backlog has not already been approved. It moves only unstarted queued requests without an approval history into review. Active, ready, collected, and cancelled work is preserved. It is safe to rerun without duplicating these holds. Direct Sheet changes bypass application review and revision controls; use the app afterward.
+5. In GitHub repository variables, retain `VITE_GOOGLE_SCRIPT_URL` with the existing `/exec` URL. `STAFF_API_URL` may remain empty. Run the **Verify and deploy GitHub Pages** workflow; it passes the Apps Script URL to both the public form and staff dashboard.
+6. Verify a clearly labeled real request for each machine with the coordinator: submit a small DXF/SVG and a print file, confirm the Drive link appears on the staff ticket, edit/approve, start, log material, mark ready, and collect. Also test decline with a private reason.
 
 Google Drive artwork remains private. Give authorized admins/staff access to the existing workshop folder; the app does not make files public.
 
-## Hosting configuration
+## Optional private-server configuration
 
-Use the host’s private environment settings:
+The following is only for a future Node-hosted deployment. It is not needed for the GitHub Pages-only pipeline:
 
 ```dotenv
 NODE_ENV=production
@@ -86,6 +84,7 @@ PUBLIC_REQUEST_URL=https://shailp08.github.io/MandirTickets/
 TEXTBEE_API_KEY=SET-PRIVATELY
 TEXTBEE_DEVICE_ID=YOUR-DEDICATED-PHONE-ID
 DATA_DIR=/app/data
+UPLOAD_REQUEST_TIMEOUT_MS=900000
 SHEETS_WEBHOOK_URL=
 SHEETS_SHARED_SECRET=
 ```
@@ -120,8 +119,8 @@ npm run test:staff
 
 ## Verification
 
-Both production builds passed. The backend suite passed 67 tests and the dashboard/library suite passed 190 tests. Checks cover approval gating, admin/staff authorization, editable fields, stale revisions, file-path restrictions, flexible production ordering, privacy, upload validation, material-entry retries, and Textbee acceptance, rejection, restart recovery, and duplicate-send prevention. The existing local-data audit passed.
+Both production builds passed. The backend suite passed 110 tests and the dashboard/library suite passed 194 tests. Checks cover inline and resumable uploads, queue transport fallback, approval gating, editable fields, stale revisions, file-path restrictions, flexible production ordering, privacy, upload validation, material-entry retries, and duplicate-send prevention. The existing local-data audit passed with two tickets, two files, and no orphaned files.
 
 Browser checks used a separate sample database and confirmed both configured accounts, removal of the requester paper selector, awaiting-review receipts, admin corrections/approval, staff starting a later job, actual paper usage, pickup status, a visible unconfigured Textbee notification, and decline reasons in private tracking. Sample data and credentials are excluded from the archive. Existing Create React App maintenance warnings remain; builds and tests pass.
 
-Still needed for launch: access to the existing Apps Script editor, an online host with persistent storage, and the dedicated Textbee phone/SIM/account connection.
+Still needed for launch: publish a new version of the existing Apps Script deployment and rerun the GitHub Pages workflow. A private Node host is not required. A dedicated Textbee phone/SIM/account is needed only if SMS notifications are enabled later.
