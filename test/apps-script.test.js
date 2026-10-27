@@ -55,6 +55,30 @@ test('Apps Script backend validates a complete foam ticket', () => {
   assert.equal(ticket.thickness, 2);
 });
 
+test('request-key tracking distinguishes a pending save from a permanent backend failure', () => {
+  const requestKey = 'd'.repeat(32);
+  const properties = propertiesStore({});
+  const sheet = {};
+  const isolated = loadContext({ PropertiesService: { getScriptProperties: () => properties } });
+  isolated.openBook_ = () => ({});
+  isolated.ensureTicketSheet_ = () => sheet;
+  isolated.findRow_ = () => 0;
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(isolated.trackTicket_({ requestKey }))),
+    { ok: false, pending: true, error: 'The ticket is still being saved.' },
+  );
+
+  isolated.rememberTicketFailure_(requestKey, new Error('The destination Sheet rejected the row.'));
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(isolated.trackTicket_({ requestKey }))),
+    { ok: false, pending: false, error: 'The destination Sheet rejected the row.' },
+  );
+
+  isolated.clearTicketFailure_(requestKey);
+  assert.equal(properties.getProperty(`FAILED_${requestKey}`), null);
+});
+
 test('Apps Script backend accepts calendar deadlines and removes the legacy notes marker', () => {
   const ticket = context.validatePublicTicket_({ ...baseTicket(), neededByDate: '2099-12-31', notes: 'Needed by date: 2099-12-31\nBlue logo' });
   assert.equal(ticket.neededBy, '2099-12-31');
@@ -261,10 +285,14 @@ test('abandoned upload cleanup trashes only expired pending files and removes st
   const now = Date.now();
   const oldKey = `UPLOAD_${'a'.repeat(32)}`;
   const freshKey = `UPLOAD_${'b'.repeat(32)}`;
+  const oldFailureKey = `FAILED_${'c'.repeat(32)}`;
+  const freshFailureKey = `FAILED_${'d'.repeat(32)}`;
   const properties = propertiesStore({
     UPLOAD_FOLDER_ID: 'private-folder',
     [oldKey]: JSON.stringify({ created: now - 25 * 60 * 60 * 1000, files: { 0: 10 } }),
     [freshKey]: JSON.stringify({ created: now - 60 * 60 * 1000, files: { 0: 10 } }),
+    [oldFailureKey]: JSON.stringify({ at: now - 25 * 60 * 60 * 1000, error: 'old' }),
+    [freshFailureKey]: JSON.stringify({ at: now - 60 * 60 * 1000, error: 'fresh' }),
   });
   const files = [
     { name: `.mandir-pending-${'a'.repeat(32)}-0-old.pdf`, created: now - 25 * 60 * 60 * 1000, trashed: false },
@@ -289,6 +317,8 @@ test('abandoned upload cleanup trashes only expired pending files and removes st
   assert.equal(files[2].record.trashed, false);
   assert.equal(properties.getProperty(oldKey), null);
   assert.notEqual(properties.getProperty(freshKey), null);
+  assert.equal(properties.getProperty(oldFailureKey), null);
+  assert.notEqual(properties.getProperty(freshFailureKey), null);
 });
 
 test('beginUpload binds Drive ownership metadata and requests an MD5 receipt', () => {
@@ -396,6 +426,7 @@ test('duplicate createTicket requests write one Sheet row and reuse the first ti
   let fileSaves = 0;
   let dailyIncrements = 0;
   const writtenRows = [];
+  const statusValidations = [];
   const lock = {
     locked: false,
     waitLock() { this.locked = true; },
@@ -411,13 +442,21 @@ test('duplicate createTicket requests write one Sheet row and reuse the first ti
       },
       getDisplayValue: () => column === 32 ? writtenRows[0]?.[31] || '' : '',
       setValue(value) { if (column === 32 && writtenRows[0]) writtenRows[0][31] = value; },
+      setDataValidation(value) { if (column === 14) statusValidations.push(value); },
     }),
   };
   const isolated = loadContext({
     console: { ...console, error() {} },
     LockService: { getScriptLock: () => lock },
     PropertiesService: { getScriptProperties: () => properties },
-    SpreadsheetApp: { flush() {} },
+    SpreadsheetApp: {
+      flush() {},
+      newDataValidation: () => ({
+        requireValueInList() { return this; },
+        setAllowInvalid() { return this; },
+        build() { return 'current-status-validation'; },
+      }),
+    },
     Utilities: { getUuid: () => 'ticket-uuid' },
   });
   isolated.validatePublicTicket_ = input => ({ ...baseTicket(), ...input, machine: 'foam', files: [] });
@@ -449,6 +488,7 @@ test('duplicate createTicket requests write one Sheet row and reuse the first ti
   assert.equal(writtenRows[0].slice(22, 27).join(','), ',,,,');
   assert.equal(writtenRows[0][27], '[]');
   assert.equal(writtenRows[0][28], '[]');
+  assert.deepEqual(statusValidations, ['current-status-validation']);
   assert.equal(fileSaves, 1);
   assert.equal(dailyIncrements, 1);
 });

@@ -7,6 +7,9 @@ const DRIVE_CHUNK_BYTES = 10 * 1024 * 1024;
 const DRIVE_MAX_RECOVERY_ATTEMPTS = 5;
 const DRIVE_REQUEST_TIMEOUT = 5 * 60 * 1000;
 const SHEETS_REQUEST_ATTEMPTS = 5;
+const SHEETS_CONFIRMATION_ATTEMPTS = 12;
+const SHEETS_CREATE_RETRY_ATTEMPT = 5;
+const SHEETS_UPLOAD_START_TIMEOUT = 45000;
 const uploadedFilesByRequest = new Map();
 const wait = milliseconds => new Promise(resolve => window.setTimeout(resolve, milliseconds));
 
@@ -133,7 +136,11 @@ export async function trackSheetsTicket(url, { ticket, code, requestKey } = {}) 
     action: 'track',
     ...(requestKey ? { requestKey } : { ticket: String(ticket || '').trim().toUpperCase(), code: String(code || '').trim().toUpperCase() }),
   });
-  if (!response?.ok) throw new Error(response?.error || 'The ticket could not be found.');
+  if (!response?.ok) {
+    const error = new Error(response?.error || 'The ticket could not be found.');
+    error.retryable = response?.pending === true;
+    throw error;
+  }
   return response.ticket;
 }
 
@@ -308,7 +315,7 @@ async function uploadFiles(url, details, files, onProgress) {
         type: file.type || 'application/octet-stream',
         size: file.size,
         origin: location.origin,
-      });
+      }, SHEETS_UPLOAD_START_TIMEOUT);
     } catch (cause) {
       throw new Error('Google did not start the file upload. Your form and file are still selected; wait a moment and choose Try again.', { cause });
     }
@@ -341,25 +348,27 @@ export async function createSheetsTicket(url, details, files, onProgress) {
     : String(normalizedDetails.notes || '');
   const uploadedFiles = await uploadFiles(url, normalizedDetails, files, onProgress);
   onProgress?.(92);
-  await fetch(url, {
+  const createRequest = {
+    action: 'createTicket',
+    ...normalizedDetails,
+    ...(hasRequestedDate ? {
+      neededByDate: normalizedDetails.neededBy,
+      neededBy: legacySheetsDeadline(normalizedDetails.neededBy),
+    } : {}),
+    notes: compatibleNotes,
+    files: uploadedFiles,
+  };
+  const sendCreateRequest = () => fetch(url, {
     method: 'POST',
     mode: 'no-cors',
     cache: 'no-store',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({
-      action: 'createTicket',
-      ...normalizedDetails,
-      ...(hasRequestedDate ? {
-        neededByDate: normalizedDetails.neededBy,
-        neededBy: legacySheetsDeadline(normalizedDetails.neededBy),
-      } : {}),
-      notes: compatibleNotes,
-      files: uploadedFiles,
-    }),
+    body: JSON.stringify(createRequest),
   });
+  await retrySheetsTransport(sendCreateRequest, { attempts: 3 });
   onProgress?.(95);
   let lastError;
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < SHEETS_CONFIRMATION_ATTEMPTS; attempt++) {
     try {
       const ticket = await trackSheetsTicket(url, { requestKey: normalizedDetails.requestKey });
       onProgress?.(100);
@@ -367,7 +376,9 @@ export async function createSheetsTicket(url, details, files, onProgress) {
       return ticket;
     } catch (error) {
       lastError = error;
-      if (attempt < 3) await wait(500 * (attempt + 1));
+      if (!error?.retryable) throw error;
+      if (attempt === SHEETS_CREATE_RETRY_ATTEMPT) await retrySheetsTransport(sendCreateRequest, { attempts: 3 });
+      if (attempt < SHEETS_CONFIRMATION_ATTEMPTS - 1) await wait(Math.min(1000 * (attempt + 1), 5000));
     }
   }
   throw new Error('Your files were uploaded, but Google has not confirmed the ticket yet. Choose Try again to finish without uploading the files again.', { cause: lastError });

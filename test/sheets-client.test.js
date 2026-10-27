@@ -222,7 +222,7 @@ test('completed Drive receipts are reused when ticket confirmation must be retri
         return { ok: true, sessionUrl: 'https://www.googleapis.com/upload/session-one' };
       }
       trackCalls++;
-      if (trackCalls <= 4) return { ok: false, error: 'The ticket is still being saved.' };
+      if (trackCalls <= 12) return { ok: false, pending: true, error: 'The ticket is still being saved.' };
       return { ok: true, ticket: { ticketNumber: 'P-0042', trackingCode: 'ABCD2345', status: 'queued' } };
     },
     xhr: [{ status: 200, body: { id: 'drive_file_12345', size: '4096', mimeType: 'application/pdf', md5Checksum: '0123456789abcdef0123456789abcdef' } }],
@@ -235,7 +235,7 @@ test('completed Drive receipts are reused when ticket confirmation must be retri
     assert.equal(ticket.ticketNumber, 'P-0042');
     assert.equal(beginUploads, 1, 'a confirmed Drive file must not be uploaded a second time');
     assert.equal(uploads.length, 1, 'retry should reuse the cached Drive receipt');
-    assert.equal(posts.length, 2, 'retry should resend only the idempotent ticket creation request');
+    assert.equal(posts.length, 3, 'confirmation should retry the idempotent create request, then user retry should resend it once');
     assert.deepEqual(posts[1].files, [{
       id: 'drive_file_12345',
       index: 0,
@@ -244,7 +244,35 @@ test('completed Drive receipts are reused when ticket confirmation must be retri
       size: 4096,
       md5Checksum: '0123456789abcdef0123456789abcdef',
     }]);
+    assert.deepEqual(posts[2].files, posts[1].files);
   });
+});
+
+test('ticket creation surfaces a permanent backend failure without polling it as pending', async () => {
+  const artwork = {
+    name: 'poster.pdf',
+    size: 4096,
+    type: 'application/pdf',
+    lastModified: 1770000000000,
+    slice: (start, end) => ({ size: end - start }),
+  };
+  let trackCalls = 0;
+
+  await withBrowserPipeline({
+    jsonp(parameters) {
+      if (parameters.action === 'beginUpload') return { ok: true, sessionUrl: 'https://www.googleapis.com/upload/permanent-error' };
+      trackCalls++;
+      return { ok: false, pending: false, error: 'The destination Sheet rejected the row.' };
+    },
+    xhr: [{ status: 200, body: { id: 'drive_file_error', md5Checksum: '0123456789abcdef0123456789abcdef' } }],
+  }, async () => {
+    await assert.rejects(
+      createSheetsTicket('https://script.example/exec', requestDetails('5'.repeat(32)), [artwork]),
+      /destination Sheet rejected the row/i,
+    );
+  });
+
+  assert.equal(trackCalls, 1);
 });
 
 test('a changed retry cannot reuse a request key after an uncertain submission', async () => {
@@ -268,7 +296,7 @@ test('a changed retry cannot reuse a request key after an uncertain submission',
         return { ok: true, sessionUrl: `https://www.googleapis.com/upload/session-${beginUploads}` };
       }
       trackCalls++;
-      return { ok: false, error: 'The ticket is still being saved.' };
+      return { ok: false, pending: true, error: 'The ticket is still being saved.' };
     },
     xhr: [
       { status: 200, body: { id: 'drive_file_first', md5Checksum: '0123456789abcdef0123456789abcdef' } },

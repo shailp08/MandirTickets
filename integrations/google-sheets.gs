@@ -25,6 +25,8 @@ var DEFAULT_DAILY_LIMIT = 250;
 var DEFAULT_DAILY_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024;
 var PUBLIC_QUEUE_CACHE_KEY = 'PUBLIC_QUEUE_V2';
 var PUBLIC_QUEUE_CACHE_SECONDS = 10;
+var FAILED_REQUEST_PREFIX = 'FAILED_';
+var FAILED_REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
 var DEFAULT_UPLOAD_ORIGINS = [
   'https://shailp08.github.io',
   'http://127.0.0.1:4177',
@@ -123,16 +125,16 @@ function formatTicketSheet() {
   sheet.hideColumns(1);
   sheet.hideColumns(20, 2);
   sheet.hideColumns(32);
-  var validation = SpreadsheetApp.newDataValidation().requireValueInList(STATUSES, true).setAllowInvalid(false).build();
-  sheet.getRange(2, 14, Math.max(sheet.getMaxRows() - 1, 1), 1).setDataValidation(validation);
+  sheet.getRange(2, 14, Math.max(sheet.getMaxRows() - 1, 1), 1).setDataValidation(ticketStatusValidation_());
   return true;
 }
 
 function doPost(event) {
   var lock = LockService.getScriptLock();
+  var input = {};
   try {
     var raw = event && event.postData ? event.postData.contents : '';
-    var input = JSON.parse(raw || (event && event.parameter && event.parameter.payload) || '{}');
+    input = JSON.parse(raw || (event && event.parameter && event.parameter.payload) || '{}');
 
     if (input.action === 'publicQueue') return jsonResponse_(publicWorkshopQueue_());
     if (['staffList', 'staffUpdate', 'staffUsage', 'adminReview'].indexOf(input.action) !== -1) return staffAction_(input, lock, input.publicStaff === true);
@@ -140,6 +142,7 @@ function doPost(event) {
     if (Array.isArray(input.row)) return syncServerRow_(input, lock);
     if (input.action !== 'createTicket') return jsonResponse_({ ok: false, error: 'Unsupported action.' });
 
+    clearTicketFailure_(input.requestKey);
     var request = validatePublicTicket_(input);
     var requestFingerprint = requestFingerprint_(request);
     lock.waitLock(20000);
@@ -151,6 +154,7 @@ function doPost(event) {
       if (existingFingerprint && existingFingerprint !== requestFingerprint) throw new Error('This request was already saved with different details or files. Reload the form to start a new request.');
       if (!existingFingerprint) sheet.getRange(existing, 32).setValue(requestFingerprint);
       properties.deleteProperty(uploadReservationKey_(request.requestKey));
+      properties.deleteProperty(requestFailureKey_(request.requestKey));
       return jsonResponse_({ ok: true, duplicate: true });
     }
     enforceDailyLimit_(properties);
@@ -167,14 +171,20 @@ function doPost(event) {
       createdAt, createdAt, 1, trackingCode, request.requestKey, 'GitHub Pages',
       '', '', '', '', '', '[]', '[]', request.smsConsent ? 'yes' : '', '', requestFingerprint
     ];
-    sheet.getRange(sheet.getLastRow() + 1, 1, 1, HEADERS.length).setValues([row.map(escapeCell_)]);
+    var targetRow = sheet.getLastRow() + 1;
+    // A deployed backend can add statuses before the bound Sheet is reformatted.
+    // Refresh the destination cell's validation so an old rule cannot reject the row.
+    sheet.getRange(targetRow, 14).setDataValidation(ticketStatusValidation_());
+    sheet.getRange(targetRow, 1, 1, HEADERS.length).setValues([row.map(escapeCell_)]);
     SpreadsheetApp.flush();
     invalidatePublicQueueCache_();
     incrementDailyCount_(properties);
     properties.deleteProperty(uploadReservationKey_(request.requestKey));
+    properties.deleteProperty(requestFailureKey_(request.requestKey));
     return jsonResponse_({ ok: true });
   } catch (error) {
     console.error(error && error.stack ? error.stack : error);
+    rememberTicketFailure_(input && input.requestKey, error);
     return jsonResponse_({ ok: false, error: safeError_(error) });
   } finally {
     if (lock.hasLock()) lock.releaseLock();
@@ -200,8 +210,12 @@ function trackTicket_(params) {
   var sheet = ensureTicketSheet_(openBook_());
   var rowNumber = 0;
   var byRequestKey = String(params.requestKey || '').toLowerCase();
-  if (/^[a-f0-9]{32}$/.test(byRequestKey)) rowNumber = findRow_(sheet, 21, byRequestKey);
-  if (!rowNumber) {
+  if (/^[a-f0-9]{32}$/.test(byRequestKey)) {
+    var failure = readTicketFailure_(byRequestKey);
+    if (failure) return { ok: false, pending: false, error: failure.error };
+    rowNumber = findRow_(sheet, 21, byRequestKey);
+    if (!rowNumber) return { ok: false, pending: true, error: 'The ticket is still being saved.' };
+  } else {
     var number = String(params.ticket || '').trim().toUpperCase();
     var code = String(params.code || '').trim().toUpperCase();
     if (!/^[PF]-\d{4,8}$/.test(number) || !/^[A-Z2-9]{8}$/.test(code)) throw new Error('Enter the ticket number and tracking code from the receipt.');
@@ -209,7 +223,6 @@ function trackTicket_(params) {
     if (!rowNumber) throw new Error('Ticket not found. Check the number on the receipt.');
     if (String(sheet.getRange(rowNumber, 20).getDisplayValue()).toUpperCase() !== code) throw new Error('Ticket not found. Check the number and tracking code.');
   }
-  if (!rowNumber) throw new Error('The ticket is still being saved.');
   var row = sheet.getRange(rowNumber, 1, 1, HEADERS.length).getValues()[0];
   var status = String(row[13] || '').toLowerCase();
   var position = activePosition_(sheet, rowNumber, String(row[2]), status);
@@ -225,6 +238,40 @@ function trackTicket_(params) {
       createdAt: row[16] instanceof Date ? row[16].toISOString() : String(row[16])
     }
   };
+}
+
+function ticketStatusValidation_() {
+  return SpreadsheetApp.newDataValidation().requireValueInList(STATUSES, true).setAllowInvalid(false).build();
+}
+
+function requestFailureKey_(requestKey) {
+  return FAILED_REQUEST_PREFIX + String(requestKey || '').toLowerCase();
+}
+
+function clearTicketFailure_(requestKey) {
+  var normalized = String(requestKey || '').toLowerCase();
+  if (/^[a-f0-9]{32}$/.test(normalized)) PropertiesService.getScriptProperties().deleteProperty(requestFailureKey_(normalized));
+}
+
+function rememberTicketFailure_(requestKey, error) {
+  var normalized = String(requestKey || '').toLowerCase();
+  if (!/^[a-f0-9]{32}$/.test(normalized)) return;
+  PropertiesService.getScriptProperties().setProperty(requestFailureKey_(normalized), JSON.stringify({
+    at: Date.now(),
+    error: safeError_(error)
+  }));
+}
+
+function readTicketFailure_(requestKey) {
+  var properties = PropertiesService.getScriptProperties();
+  var key = requestFailureKey_(requestKey);
+  var failure;
+  try { failure = JSON.parse(properties.getProperty(key) || 'null'); } catch (_error) { failure = null; }
+  if (!failure || !Number.isFinite(Number(failure.at)) || Date.now() - Number(failure.at) > FAILED_REQUEST_TTL_MS) {
+    properties.deleteProperty(key);
+    return null;
+  }
+  return { error: String(failure.error || 'The ticket could not be saved.') };
 }
 
 function validatePublicTicket_(input) {
@@ -513,9 +560,16 @@ function cleanupAbandonedUploads() {
   var removedReservations = 0;
   var allProperties = properties.getProperties();
   Object.keys(allProperties).forEach(function(key) {
-    if (!/^UPLOAD_[a-f0-9]{32}$/.test(key)) return;
     var state;
     try { state = JSON.parse(allProperties[key]); } catch (_error) { state = null; }
+    if (/^FAILED_[a-f0-9]{32}$/.test(key)) {
+      if (!state || !Number.isFinite(Number(state.at)) || Number(state.at) < cutoff) {
+        properties.deleteProperty(key);
+        removedReservations++;
+      }
+      return;
+    }
+    if (!/^UPLOAD_[a-f0-9]{32}$/.test(key)) return;
     if (!state || !Number.isFinite(Number(state.created)) || Number(state.created) < cutoff) {
       properties.deleteProperty(key);
       removedReservations++;
