@@ -160,12 +160,14 @@ test('Apps Script backend rejects invalid dimensions, deadlines, keys, and attac
 test('public queue reads only public columns, caches snapshots, and survives cache failures', () => {
   let reads = 0;
   let cached = null;
+  let cacheSeconds = null;
   let failCacheWrites = false;
   const cache = {
     get: () => cached,
-    put: (_key, value) => {
+    put: (_key, value, seconds) => {
       if (failCacheWrites) throw new Error('cache full');
       cached = value;
+      cacheSeconds = seconds;
     },
     remove: () => { cached = null; },
   };
@@ -176,6 +178,7 @@ test('public queue reads only public columns, caches snapshots, and survives cac
   assert.equal(isolated.publicWorkshopQueue_().machines[0].tickets[0].ticketNumber, 'P-0001');
   assert.equal(isolated.publicWorkshopQueue_().machines[0].tickets[0].ticketNumber, 'P-0001');
   assert.equal(reads, 1);
+  assert.equal(cacheSeconds, 60);
 
   isolated.invalidatePublicQueueCache_();
   failCacheWrites = true;

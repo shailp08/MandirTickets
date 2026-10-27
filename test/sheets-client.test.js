@@ -188,6 +188,20 @@ test('live queue uses a short retry budget and recovers from one transport failu
   assert.deepEqual(result.machines, []);
 });
 
+test('live queue tolerates two cold-start transport failures before showing an error', async () => {
+  let calls = 0;
+  const result = await withBrowserPipeline({
+    jsonp(parameters) {
+      assert.equal(parameters.action, 'queue');
+      calls++;
+      return calls < 3 ? { transportError: true } : { ok: true, machines: [] };
+    },
+  }, () => fetchSheetsQueue('https://script.example/exec'));
+
+  assert.equal(calls, 3);
+  assert.deepEqual(result.machines, []);
+});
+
 test('Google Sheets client uses a longer default retry window', async () => {
   let calls = 0;
   const pauses = [];

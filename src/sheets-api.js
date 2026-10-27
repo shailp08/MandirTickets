@@ -117,8 +117,8 @@ export async function sheetsJsonp(url, parameters, timeout = 15000) {
 }
 
 export async function fetchSheetsQueue(url, {
-  timeout = 5000,
-  attempts = 2,
+  timeout = 12000,
+  attempts = 3,
   pause = wait,
 } = {}) {
   try {

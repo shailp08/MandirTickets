@@ -34,8 +34,10 @@ function writeCachedQueue(storage, key, data) {
   try { storage.setItem(key, JSON.stringify({ savedAt: Date.now(), data })); } catch {}
 }
 
-function browserSessionStorage() {
-  try { return typeof window === 'undefined' ? null : window.sessionStorage; } catch { return null; }
+function browserQueueStorage() {
+  // The queue is public data. Keep the last good snapshot across tabs so the
+  // page renders immediately while a cold Apps Script instance wakes up.
+  try { return typeof window === 'undefined' ? null : window.localStorage; } catch { return null; }
 }
 
 export async function fetchQueueApi(apiBase, { fetcher = fetch, timeout = 8000 } = {}) {
@@ -80,7 +82,7 @@ function getPositionText(t) {
 }
 
 export default function QueueBoard({ apiBase, sheetsUrl, preview, recentTicket }) {
-  const storage = browserSessionStorage();
+  const storage = browserQueueStorage();
   const cacheKey = queueCacheKey(apiBase, sheetsUrl);
   const [data, setData] = useState(() => readCachedQueue(storage, cacheKey)), [error, setError] = useState(''), [machine, setMachine] = useState('printer');
   const [loading, setLoading] = useState(false), [refresh, setRefresh] = useState(0);
