@@ -84,11 +84,12 @@ test('malware screening fails closed when required, unavailable, or rejected', a
   await assert.rejects(createMalwareScanner(process.execPath)(file.path),error=>error.status===503);
 });
 test('ticket numeric validation rejects coercion, invalid units and unsafe dimensions', () => {
-  for (const value of [true,false,null,[],['2'],{},'', ' ', '0x10','1e2','Infinity','NaN','-1','0','0.009',Infinity,NaN]) {
+  for (const value of [true,false,null,[],['2'],{},'0x10','1e2','Infinity','NaN','-1','0','0.009',Infinity,NaN]) {
     assert.throws(()=>validateTicket({...details,width:value},[]), undefined, String(value));
   }
   for (const body of [null,undefined,[],{}, {...details,machine:['foam']}, {...details,unit:'mm'}, {...details,quantity:'1.5'}, {...details,quantity:'10001'}]) assert.throws(()=>validateTicket(body,[]));
   assert.equal(validateTicket({...details,width:'.01'},[]).width,0.01);
+  assert.equal(validateTicket({...details,width:' '},[]).width,0);
   assert.equal(validateTicket({...details,unit:'in'},[]).unit,'in');
   const print = {...details,machine:'printer',paperType:'Glossy',width:'24'};
   const printFiles = [{ originalName: 'poster.pdf' }];

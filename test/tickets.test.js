@@ -36,6 +36,8 @@ test('validates department, purpose, printer width, quantity and required print 
   assert.equal(validateTicket(input,[]).machine,'foam');
   assert.equal(validateTicket({...input,neededBy:'Today'},[]).neededBy,'Today');
   assert.equal(validateTicket({...input,neededBy:undefined},[]).neededBy,'No rush');
+  const withoutOptionalFields={...input}; delete withoutOptionalFields.phone; delete withoutOptionalFields.width; delete withoutOptionalFields.length;
+  assert.deepEqual({phone:validateTicket(withoutOptionalFields,[]).phone,width:validateTicket(withoutOptionalFields,[]).width,length:validateTicket(withoutOptionalFields,[]).length},{phone:'',width:0,length:0});
 });
 test('validates file formats for each machine',()=>{
   assert.throws(()=>validateTicket({...input,machine:'printer'},[{originalName:'cut.svg'}]),/PDF or JPG/i);

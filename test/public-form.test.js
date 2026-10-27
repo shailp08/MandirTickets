@@ -42,3 +42,15 @@ test('poster and foam customer forms do not ask for a needed-by date', () => {
     assert.doesNotMatch(html, /type="date"/i);
   }
 });
+
+test('customer forms omit phone and make finished size optional', () => {
+  for (const machine of ['printer', 'foam']) {
+    const html = renderTicketForm(machine);
+    assert.doesNotMatch(html, /name="phone"/i);
+    for (const field of ['width', 'length']) {
+      const input = html.match(new RegExp(`<input[^>]*name="${field}"[^>]*>`))?.[0];
+      assert.ok(input, `${field} input should be rendered`);
+      assert.doesNotMatch(input, /\srequired(?:=|\s|>)/i, `${field} should be optional`);
+    }
+  }
+});

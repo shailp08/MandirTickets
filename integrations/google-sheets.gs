@@ -300,12 +300,12 @@ function validatePublicTicket_(input) {
     customerName: cleanText_(input.customerName, 'Name', 100, true),
     department: cleanText_(input.department, 'Department', 100, true),
     purpose: cleanText_(input.purpose, 'Purpose', 2000, true),
-    phone: cleanText_(input.phone, 'Phone', 40, false),
+    phone: cleanText_(input.phone === undefined ? '' : input.phone, 'Phone', 40, false),
     smsConsent: input.smsConsent === true || input.smsConsent === 'true' || input.smsConsent === 'on',
     notes: cleanText_(notesInput, 'Notes', 4000, false),
     quantity: positiveNumber_(input.quantity, 'Quantity', 10000, true),
-    width: positiveNumber_(input.width, 'Width', machine === 'printer' ? 24 : 10000, false),
-    length: positiveNumber_(input.length, 'Length', 100000, false),
+    width: optionalPositiveNumber_(input.width, 'Width', machine === 'printer' ? 24 : 10000),
+    length: optionalPositiveNumber_(input.length, 'Length', 100000),
     neededBy: neededByDate_(input.neededByDate || (input.neededBy === undefined ? 'No rush' : input.neededBy)),
     paperType: '',
     thickness: '',
@@ -916,6 +916,11 @@ function positiveNumber_(value, label, max, integer) {
   return number;
 }
 
+function optionalPositiveNumber_(value, label, max) {
+  if (value === undefined || (typeof value === 'string' && value.trim() === '')) return '';
+  return positiveNumber_(value, label, max, false);
+}
+
 function requiredChoice_(value, choices, message) {
   if (typeof value !== 'string' || !Object.prototype.hasOwnProperty.call(choices, value)) throw new Error(message);
   return value;
@@ -998,8 +1003,9 @@ function validateReview(ticket, input) {
     if (typeof v !== 'string' || v.length > max || (required && !v.trim())) workshopFail_('Check ' + key + '.');
     return v.trim();
   };
-  const num = (key, max) => {
+  const num = (key, max, optional) => {
     const raw = fields[key] === undefined ? ticket[key] : fields[key];
+    if (optional && (raw === undefined || raw === 0 || (typeof raw === 'string' && raw.trim() === ''))) return 0;
     if (!['number','string'].includes(typeof raw) || !/^(?:\d+\.?\d*|\.\d+)$/.test(String(raw).trim())) workshopFail_('Check ' + key + '.');
     const v = Number(raw); if (!Number.isFinite(v) || v < .01 || v > max) workshopFail_('Check ' + key + '.'); return v;
   };
@@ -1029,7 +1035,7 @@ function validateReview(ticket, input) {
   const operator = typeof input.operator === 'string' ? input.operator.trim() : '';
   if (!operator || operator.length > 100) workshopFail_('Enter the reviewing admin name.');
   const phone = normalizePhone(str('phone',40), ticket.smsConsent === true);
-  const edits = { machine, neededBy, quantity, paperType, files, phone, customerName: str('customerName',100,true), department: str('department',100,true), purpose: str('purpose',2000,true), notes: str('notes',4000), width: num('width',machine === 'printer' ? 24 : 10000), length:num('length',100000), thickness:machine === 'foam' ? num('thickness',1000) : 0 };
+  const edits = { machine, neededBy, quantity, paperType, files, phone, customerName: str('customerName',100,true), department: str('department',100,true), purpose: str('purpose',2000,true), notes: str('notes',4000), width: num('width',machine === 'printer' ? 24 : 10000,true), length:num('length',100000,true), thickness:machine === 'foam' ? num('thickness',1000) : 0 };
   const changes = Object.keys(edits).filter(k => JSON.stringify(ticket[k]) !== JSON.stringify(edits[k])).map(k => ({ field:k, before:ticket[k] ?? null, after:edits[k] }));
   return { edits, changes, reason, operator, status: input.decision === 'approve' ? 'queued' : input.decision === 'decline' ? 'declined' : 'pending-review' };
 }

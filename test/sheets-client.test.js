@@ -578,6 +578,29 @@ test('ticket creation defaults to no rush when the customer form has no needed-b
   assert.equal(posted.notes, 'Use the blue foam.');
 });
 
+test('ticket creation supplies safe defaults when phone and size inputs are absent', async () => {
+  let posted;
+  await withBrowserPipeline({
+    jsonp: () => ({ ok: true, ticket: { ticketNumber: 'F-0046', trackingCode: 'EFGH6789', status: 'pending-review' } }),
+    onPost: body => { posted = body; },
+  }, async () => {
+    const details = {
+      ...requestDetails('88888888888888888888888888888888'),
+      machine: 'foam',
+      thickness: '2',
+    };
+    delete details.phone;
+    delete details.width;
+    delete details.length;
+    await createSheetsTicket('https://script.example/exec', details, []);
+  });
+
+  assert.equal(posted.phone, '');
+  assert.equal(posted.smsConsent, false);
+  assert.equal(posted.width, '');
+  assert.equal(posted.length, '');
+});
+
 test('small DXF tickets bypass the fragile browser Drive handshake', async () => {
   const contents = Buffer.from('0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n');
   const artwork = {

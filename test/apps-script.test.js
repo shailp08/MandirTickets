@@ -55,6 +55,17 @@ test('Apps Script backend validates a complete foam ticket', () => {
   assert.equal(ticket.thickness, 2);
 });
 
+test('Apps Script accepts a ticket without hidden phone or finished size fields', () => {
+  const request = baseTicket();
+  delete request.phone;
+  delete request.width;
+  delete request.length;
+  const ticket = context.validatePublicTicket_(request);
+  assert.equal(ticket.phone, '');
+  assert.equal(ticket.width, '');
+  assert.equal(ticket.length, '');
+});
+
 test('request-key tracking distinguishes a pending save from a permanent backend failure', () => {
   const requestKey = 'd'.repeat(32);
   const properties = propertiesStore({});
@@ -203,6 +214,7 @@ test('Apps Script backend requires a valid Drive checksum on every direct-upload
 
 test('Apps Script backend rejects invalid dimensions, deadlines, keys, and attachments', () => {
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), width: '0' }), /valid width/i);
+  assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), width: null }), /valid width/i);
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), neededBy: 'Eventually' }), /needed/i);
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), requestKey: 'short' }), /Refresh/i);
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), files: [{ name: 'bad.exe', size: 4, data: 'AAAAAA==' }] }), /SVG or DXF/i);

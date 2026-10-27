@@ -454,7 +454,14 @@ async function uploadFiles(url, details, files, onProgress) {
 }
 
 export async function createSheetsTicket(url, details, files, onProgress) {
-  const normalizedDetails = { ...details, neededBy: details.neededBy === undefined ? 'No rush' : details.neededBy };
+  const normalizedDetails = {
+    ...details,
+    phone: details.phone ?? '',
+    smsConsent: details.smsConsent ?? false,
+    width: details.width ?? '',
+    length: details.length ?? '',
+    neededBy: details.neededBy === undefined ? 'No rush' : details.neededBy,
+  };
   const hasRequestedDate = normalizedDetails.neededBy !== 'No rush';
   if (hasRequestedDate) validateNeededByDate(normalizedDetails.neededBy);
   const compatibleNotes = hasRequestedDate

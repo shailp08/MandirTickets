@@ -175,7 +175,7 @@ export function TicketForm({ machine, onChangeMachine, onTicket }) {
     try {
       let submittedTicket;
       if (SHEETS_API_URL) {
-        const details = Object.fromEntries(data.entries());
+        const details = { phone: '', smsConsent: false, ...Object.fromEntries(data.entries()) };
         submittedTicket = await createSheetsTicket(SHEETS_API_URL, {
           ...details,
           requestKey: requestKey.current,
@@ -222,7 +222,7 @@ export function TicketForm({ machine, onChangeMachine, onTicket }) {
         <strong className="receipt-number">{ticket.ticketNumber}</strong>
         {ticket.trackingCode && <><p className="receipt-label">Tracking code</p><strong className="tracking-code">{ticket.trackingCode}</strong></>}
         <p>{machineName(ticket)} · {ticket.department}{ticket.position ? ` · ${ticket.position - 1} ${ticket.position === 2 ? 'job' : 'jobs'} ahead of you` : ''}</p>
-        <p className="receipt-help">A karyakar will check your files and dimensions before your request joins the staff queue. Save the ticket number{ticket.trackingCode ? ' and tracking code' : ''}. You will need them to check progress or collect the finished job.</p>
+        <p className="receipt-help">A karyakar will check your files and request details before your request joins the staff queue. Save the ticket number{ticket.trackingCode ? ' and tracking code' : ''}. You will need them to check progress or collect the finished job.</p>
         <div className="receipt-actions">
           <button className="button button-secondary" type="button" onClick={() => window.print()}><Printer aria-hidden="true" /> Print receipt</button>
           <button className="button button-primary" type="button" onClick={startAnother}>Open another ticket <ArrowRight aria-hidden="true" /></button>
@@ -257,10 +257,10 @@ export function TicketForm({ machine, onChangeMachine, onTicket }) {
           <div className={`field-grid details-grid details-grid-${machine}`}>
             {machine === 'foam' && <label>Foam thickness <span>Required</span><select name="thickness" required defaultValue=""><option value="" disabled>Choose thickness</option><option value="1">1 inch</option><option value="2">2 inches</option></select></label>}
             <label>Quantity <span>Required</span><input name="quantity" type="number" min="1" max="10000" step="1" defaultValue="1" required /></label>
-            <label>Width in inches <span>Required</span><input name="width" type="number" min="0.01" max={machine === 'printer' ? '24' : '10000'} step="any" placeholder={machine === 'printer' ? '24' : '20'} required /></label>
-            <label>Length in inches <span>Required</span><input name="length" type="number" min="0.01" max="100000" step="any" placeholder="36" required /></label>
+            <label>Width in inches <span>Optional</span><input name="width" type="number" min="0.01" max={machine === 'printer' ? '24' : '10000'} step="any" placeholder={machine === 'printer' ? '24' : '20'} /></label>
+            <label>Length in inches <span>Optional</span><input name="length" type="number" min="0.01" max="100000" step="any" placeholder="36" /></label>
           </div>
-          <p className="field-help">{machine === 'printer' ? 'Maximum print width: 24 inches. Staff will review the artwork and choose the paper.' : 'Add the finished size and a cut layout or reference if you have one.'}</p>
+          <p className="field-help">{machine === 'printer' ? 'If known, add the finished size. Maximum print width: 24 inches. Staff will review the artwork and choose the paper.' : 'Add the finished size if known, plus a cut layout or reference if you have one.'}</p>
 
           <label className="upload-label">Artwork files <span>{machine === 'printer' ? 'Required' : 'Optional'}</span></label>
           <div className="dropzone" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>

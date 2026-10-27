@@ -112,8 +112,9 @@ test('Google review edits details with revision protection, decline reasons and 
   assert.equal(ctx.publicWorkshopQueue_().machines[1].inReview,1);
   assert.equal(call('staffUpdate',{id:'b',status:'in-progress',expectedRevision:1}).status,409);
   assert.equal(call('adminReview',{id:'b',expectedRevision:1,input:{decision:'approve',operator:'Admin',fields:{machine:'printer'}}}).status,400);
-  const result=call('adminReview',{id:'b',expectedRevision:1,input:{decision:'save',operator:'Admin',fields:{customerName:'Corrected name',width:18,notes:'Reviewed'}}});
+  const result=call('adminReview',{id:'b',expectedRevision:1,input:{decision:'save',operator:'Admin',fields:{customerName:'Corrected name',width:'',length:'',notes:'Reviewed'}}});
   assert.equal(result.ticket.customerName,'Corrected name'); assert.equal(result.ticket.status,'pending-review');
+  assert.equal(result.ticket.width,0); assert.equal(result.ticket.length,0);
   assert.ok(result.ticket.history[0].changes.some(c=>c.field==='width'));
   assert.equal(call('adminReview',{id:'b',expectedRevision:1,input:{decision:'approve',operator:'Admin'}}).status,409);
   assert.equal(call('adminReview',{id:'b',expectedRevision:2,input:{decision:'decline',operator:'Admin'}}).status,400);
