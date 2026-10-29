@@ -30,7 +30,7 @@ The obsolete pre-React frontend was still copied into the production artifact, a
 
 ### GitHub Pages had no persistent backend
 
-The static Pages build could display the request form but could not save tickets. A bound Google Apps Script backend now writes validated tickets to a private Sheet, stores bounded attachments in a private Drive folder, issues idempotent sequential ticket numbers, and exposes a JSONP tracker protected by an eight-character receipt code. The tracker returns no customer or file details.
+The static Pages build could display the request form but could not save tickets. A bound Google Apps Script backend now writes validated tickets to a private Sheet, stores bounded attachments in a private Drive folder, issues idempotent sequential ticket numbers, and exposes bounded JSONP endpoints for receipt confirmation and the public live queue. Those public responses return no contact information or file details.
 
 ## Verification
 

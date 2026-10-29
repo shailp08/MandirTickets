@@ -1,6 +1,6 @@
 # Google Sheets ticket backend
 
-This backend makes the GitHub Pages site operational without publishing the spreadsheet. Ticket details stay in a private Google Sheet, attachments stay in a private Google Drive folder, and the tracker returns only ticket number, machine, status, queue position, and creation time.
+This backend makes the GitHub Pages site operational without publishing the spreadsheet. Ticket details stay in a private Google Sheet, attachments stay in a private Google Drive folder, and the public site exposes only the live queue plus each submitter's private receipt.
 
 ## Create and deploy the backend
 
@@ -15,7 +15,7 @@ This backend makes the GitHub Pages site operational without publishing the spre
 
 The workflow also supplies the same Apps Script URL to the staff dashboard under `/staff/`. In this GitHub Pages-only mode, ticket lists are read directly from Apps Script with bounded retries and a JSONP fallback, and staff mutations are sent directly to the same deployment. No Node server or shared secret is required.
 
-Never publish the spreadsheet, share the upload folder, commit the deployment URL as source code, or add a client-side secret. The web app is intentionally public so visitors can create and track tickets; private tracking codes prevent casual enumeration of ticket status.
+Never publish the spreadsheet, share the upload folder, commit the deployment URL as source code, or add a client-side secret. The web app is intentionally public so visitors can create tickets and view the live queue; private receipt identifiers remain backend-only.
 
 ## Telegram notifications
 
@@ -29,7 +29,7 @@ Telegram is the primary notification channel. It uses the same Apps Script proje
 6. Publish a new version of the existing Apps Script web deployment, keeping the same `/exec` URL, and rebuild the GitHub Pages site.
 7. Submit a test ticket, use its **Get Telegram updates** receipt button, and confirm `/status`. Then exercise one declined test and one ready-for-pickup test with consenting accounts.
 
-The receipt uses a random one-time token valid for 24 hours. Only its SHA-256 hash is stored. If the token expires before use, the requester can enter the ticket number and tracking code in the private tracker to issue a replacement. Telegram chat and user IDs are kept in the hidden `Telegram Subscriptions` tab; delivery attempts are journaled in `Telegram Outbox`. Messages contain only the ticket number and status—no phone number, contact information, artwork, purpose, or decline reason.
+The receipt uses a random one-time token valid for 24 hours. Only its SHA-256 hash is stored. If the requester does not opt in before it expires, they can continue following the public live queue. Telegram chat and user IDs are kept in the hidden `Telegram Subscriptions` tab; delivery attempts are journaled in `Telegram Outbox`. Messages contain only the ticket number and status—no phone number, contact information, artwork, purpose, or decline reason.
 
 A successful Telegram API response is recorded as `sent`; it does not prove that the user read the message. Rate limits and temporary Telegram failures receive bounded retries. An interrupted/ambiguous send is recorded as `unknown` and is not automatically repeated, avoiding duplicate pickup messages. Ticket status changes never fail because Telegram is unavailable.
 
@@ -37,7 +37,7 @@ A successful Telegram API response is recorded as `sent`; it does not prove that
 
 - Open the private **Mandir Workshop Tickets** spreadsheet in Google Drive and use the `Tickets` tab as the staff queue. Do not link the private sheet from the public website.
 - New submissions appear as one row with status `pending-review`. The most useful staff columns are Queue number (B), Name (D), Purpose (F), Needed by (M), Status (N), and Files (P).
-- Use the staff dashboard to move requests through `queued`, `in-progress`, `ready`, `collected`, or `cancelled`. The public tracker reflects the change the next time the customer checks.
+- Use the staff dashboard to move requests through `queued`, `in-progress`, `ready`, `collected`, or `cancelled`. The public live queue reflects active status changes.
 - Telegram ready/declined notifications are queued from those dashboard history changes and normally appear within one minute. Treat the Sheet as a private record; direct status-cell edits do not create a staff-history event and therefore do not send Telegram updates.
 - To print the submitted artwork, open its private Drive link in Files (column P), then print or download it from the Drive preview.
 - To print the ticket details, select the cells in that ticket's row, choose **File → Print**, and set **Print** to **Selected cells**. Landscape orientation is usually easiest to read.
@@ -47,7 +47,7 @@ A successful Telegram API response is recorded as `sent`; it does not prove that
 
 ## Reliability target
 
-This deployment assumes one workshop, internal PII, fewer than one request per second at peak, and more tracker reads than ticket writes. The operational target is 99.5% monthly availability, with backend handshake latency excluding file-transfer time of p50 ≤ 2,500 ms, p95 ≤ 15,000 ms, and p99 ≤ 60,000 ms. The recovery point objective is zero loss for tickets that displayed a receipt; the recovery time objective is four hours. The workshop site owner is the named error-budget owner and should run the file audit after backend changes or any reported upload failure.
+This deployment assumes one workshop, internal PII, fewer than one request per second at peak, and more live-queue reads than ticket writes. The operational target is 99.5% monthly availability, with backend handshake latency excluding file-transfer time of p50 ≤ 2,500 ms, p95 ≤ 15,000 ms, and p99 ≤ 60,000 ms. The recovery point objective is zero loss for tickets that displayed a receipt; the recovery time objective is four hours. The workshop site owner is the named error-budget owner and should run the file audit after backend changes or any reported upload failure.
 
 The live queue reads only the first 17 source columns and projects just the public queue fields, caches that response for 60 seconds, and invalidates the cache after ticket or staff updates. Cache fills and mutations share a lock so a cold read cannot republish a stale snapshot after an update. A cache outage or oversized snapshot falls back to a fresh Sheet read instead of taking the queue down. Browsers retain the last successful snapshot for up to five minutes so a reload can render immediately while a fresh request is in flight.
 

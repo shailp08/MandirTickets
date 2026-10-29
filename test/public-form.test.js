@@ -5,14 +5,14 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 let viteServer;
+let App;
 let TicketForm;
-let TicketTracker;
 const originalLocation = globalThis.location;
 
 test.before(async () => {
   globalThis.location = { hostname: 'localhost', pathname: '/' };
   viteServer = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-  ({ TicketForm, TicketTracker } = await viteServer.ssrLoadModule('/src/App.jsx'));
+  ({ default: App, TicketForm } = await viteServer.ssrLoadModule('/src/App.jsx'));
 });
 
 test.after(async () => {
@@ -60,10 +60,9 @@ test('customer forms omit phone and make finished size optional', () => {
   }
 });
 
-test('private tracker can regenerate a Telegram link with receipt credentials', () => {
-  const html = renderWithHooks(() => TicketTracker());
-  assert.match(html, /Private ticket tracking/i);
-  assert.match(html, /name="ticket"/i);
-  assert.match(html, /name="code"/i);
-  assert.match(html, /new Telegram link/i);
+test('public site uses the live queue without a private tracking form', () => {
+  const html = renderWithHooks(() => React.createElement(App));
+  assert.doesNotMatch(html, /Private ticket tracking|Check your request/i);
+  assert.doesNotMatch(html, /name="code"/i);
+  assert.match(html, /Live workshop queue/i);
 });

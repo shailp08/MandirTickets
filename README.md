@@ -2,7 +2,7 @@
 
 Everything is inside this folder: the public request site, admin/staff dashboard, Google integration, and optional private-server deployment files.
 
-- `src/`: public request form, queue and tracker.
+- `src/`: public request form and live queue.
 - `server.js` and `lib/`: optional private-server authentication, review workflow, and material records.
 - `integrations/google-sheets.gs`: live Sheets/Drive backend and Telegram notification worker.
 - `staff-dashboard/`: admin/staff interface and existing prototype files.

@@ -4,14 +4,13 @@ import {
   ArrowRight,
   Check,
   FileArrowUp,
-  MagnifyingGlass,
   Printer,
   Scissors,
   UploadSimple,
   X,
 } from '@phosphor-icons/react';
 import QueueBoard from './QueueBoard.jsx';
-import { createSheetsTicket, trackSheetsTicket, validateFileSelection, validateSheetsFiles } from './sheets-api.js';
+import { createSheetsTicket, validateFileSelection, validateSheetsFiles } from './sheets-api.js';
 
 const MACHINES = {
   printer: 'Poster printing',
@@ -28,16 +27,6 @@ const SHEETS_API_URL = (import.meta.env.VITE_GOOGLE_SCRIPT_URL || import.meta.en
 const apiUrl = path => `${API_BASE_URL}${path}`;
 const staticPreview = location.hostname.endsWith('.github.io') && !API_BASE_URL && !SHEETS_API_URL;
 const TELEGRAM_LINK_PATTERN = /^https:\/\/t\.me\/[A-Za-z][A-Za-z0-9_]{4,31}\?start=[A-Za-z0-9_-]{16,64}$/;
-
-const TRACKING_STATUS = {
-  'pending-review': 'Awaiting review',
-  declined: 'Declined',
-  queued: 'Waiting in the queue',
-  'in-progress': 'In progress',
-  ready: 'Ready for pickup',
-  collected: 'Collected',
-  cancelled: 'Cancelled',
-};
 
 const machineName = ticket => MACHINES[ticket?.machine]
   || LEGACY_MACHINE_NAMES[ticket?.machineName]
@@ -235,9 +224,8 @@ export function TicketForm({ machine, onChangeMachine, onTicket }) {
         <h2 id="receipt-title">Your request is awaiting review.</h2>
         <p className="receipt-label">Ticket number</p>
         <strong className="receipt-number">{ticket.ticketNumber}</strong>
-        {ticket.trackingCode && <><p className="receipt-label">Tracking code</p><strong className="tracking-code">{ticket.trackingCode}</strong></>}
         <p>{machineName(ticket)} · {ticket.department}{ticket.position ? ` · ${ticket.position - 1} ${ticket.position === 2 ? 'job' : 'jobs'} ahead of you` : ''}</p>
-        <p className="receipt-help">A karyakar will check your files and request details before your request joins the staff queue. Save the ticket number{ticket.trackingCode ? ' and tracking code' : ''}. Telegram can notify you when the request is ready or declined, and you can ask the bot for its current status anytime.</p>
+        <p className="receipt-help">A karyakar will check your files and request details before your request joins the staff queue. Save the ticket number. Follow the live queue, or opt in to Telegram for ready and declined updates and on-demand status checks.</p>
         <div className="receipt-actions">
           {telegramLink && <a className="button button-primary" href={telegramLink} target="_blank" rel="noreferrer">Get Telegram updates <ArrowRight weight="bold" aria-hidden="true" /></a>}
           <button className="button button-secondary" type="button" onClick={() => window.print()}><Printer aria-hidden="true" /> Print receipt</button>
@@ -311,84 +299,6 @@ export function TicketForm({ machine, onChangeMachine, onTicket }) {
   );
 }
 
-export function TicketTracker() {
-  const [ticket, setTicket] = useState(null);
-  const [notice, setNotice] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  const submit = async event => {
-    event.preventDefault();
-    if (loading || !event.currentTarget.reportValidity()) return;
-    const data = new FormData(event.currentTarget);
-    const number = String(data.get('ticket') || '').trim().toUpperCase();
-    const code = String(data.get('code') || '').trim().toUpperCase();
-    setLoading(true);
-    setNotice('');
-    setTicket(null);
-    try {
-      if (staticPreview) throw new Error('The hosted ticket service is not connected. Use the local workshop site to track a live request.');
-      if (SHEETS_API_URL) {
-        setTicket(await trackSheetsTicket(SHEETS_API_URL, { ticket: number, code }));
-      } else {
-        const response = await fetch(`${apiUrl(`/api/track/${encodeURIComponent(number)}`)}?code=${encodeURIComponent(code)}`, {
-          headers: { Accept: 'application/json' },
-          credentials: 'same-origin',
-        });
-        let result = {};
-        try { result = await response.json(); } catch { /* Use the safe fallback below. */ }
-        if (!response.ok) throw new Error(result.error || 'The ticket could not be found.');
-        setTicket(result);
-      }
-    } catch (error) {
-      setNotice(error.message || 'The ticket could not be found.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const status = String(ticket?.status || '').toLowerCase();
-  const telegramLink = typeof ticket?.telegramLink === 'string' && TELEGRAM_LINK_PATTERN.test(ticket.telegramLink)
-    ? ticket.telegramLink
-    : '';
-  const position = Number(ticket?.position);
-  const queueText = Number.isSafeInteger(position) && position > 0
-    ? position === 1 ? 'Next in the active queue' : `${position - 1} ${position === 2 ? 'job' : 'jobs'} ahead`
-    : '';
-  const resultSummary = [ticket?.machineName, queueText].filter(Boolean).join(' · ');
-
-  return (
-    <section className="tracker-section" id="track" aria-labelledby="tracker-title">
-      <div className="tracker-heading">
-        <span className="tracker-icon"><MagnifyingGlass size={27} weight="bold" aria-hidden="true" /></span>
-        <div>
-          <p className="eyebrow">Private ticket tracking</p>
-          <h2 id="tracker-title">Check your request</h2>
-          <p>Use the ticket number and tracking code on your receipt. You can also get a new Telegram link here until the ticket is linked.</p>
-        </div>
-      </div>
-      <form className="tracker-form" onSubmit={submit} aria-busy={loading}>
-        <label>Ticket number <span>Required</span><input name="ticket" required maxLength="10" pattern="[PpFf]-[0-9]{4,8}" placeholder="P-0001" autoComplete="off" spellCheck="false" /></label>
-        <label>Tracking code <span>Required</span><input name="code" required maxLength="8" pattern="[A-Za-z2-9]{8}" placeholder="ABCD2345" autoComplete="off" spellCheck="false" /></label>
-        <button className="button" type="submit" disabled={loading}>{loading ? 'Checking' : 'Check status'}</button>
-      </form>
-      {notice && <p className="notice error" role="alert">{notice}</p>}
-      {ticket && (
-        <div className="tracker-result" role="status">
-          <span className={`status-dot status-${status.replace(/[^a-z-]/g, '')}`} aria-hidden="true" />
-          <div>
-            <small>{ticket.ticketNumber}</small>
-            <strong>{TRACKING_STATUS[status] || 'Status unavailable'}</strong>
-            {resultSummary && <p>{resultSummary}</p>}
-            {ticket.reason && <p>Staff note: {ticket.reason}</p>}
-            {ticket.telegramLinked && <p className="telegram-linked">Telegram updates are already linked for this ticket.</p>}
-            {telegramLink && <a className="button tracker-telegram-button" href={telegramLink} target="_blank" rel="noreferrer">Get Telegram updates <ArrowRight weight="bold" aria-hidden="true" /></a>}
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
-
 function App() {
   const [machine, setMachine] = useState(null);
   const [recentTicket, setRecentTicket] = useState(null);
@@ -406,7 +316,6 @@ function App() {
       <main id="main" tabIndex="-1">
         <MachineChoice value={machine} onChange={chooseMachine} />
         {machine && <div id="ticket-form"><TicketForm machine={machine} onChangeMachine={chooseMachine} onTicket={setRecentTicket} /></div>}
-        <TicketTracker />
         <QueueBoard apiBase={API_BASE_URL} sheetsUrl={SHEETS_API_URL} preview={staticPreview} recentTicket={recentTicket} />
       </main>
       <footer><strong>Mandir Workshop Tickets</strong><span>Poster printing and foam cutting requests in one place.</span></footer>

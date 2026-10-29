@@ -1585,7 +1585,7 @@ function handleTelegramUpdate_(update, book, subscriptions, outbox, properties) 
       subscription[TELEGRAM_SUB.TOKEN_HASH] = '';
       subscription[TELEGRAM_SUB.TOKEN_EXPIRES] = '';
       subscriptions.getRange(subscriptionRow, 1, 1, subscription.length).setValues([subscription.map(escapeCell_)]);
-      telegramCommandReply_(outbox, updateId, chatId, 'This ticket link has expired. Generate a new Telegram link from the ticket tracker.', 'requester', 'start');
+      telegramCommandReply_(outbox, updateId, chatId, 'This ticket link has expired. Use the public live queue for updates.', 'requester', 'start');
       return;
     }
     var ticket = ticketMap.byId.get(String(subscription[TELEGRAM_SUB.TICKET_ID]));
