@@ -20,7 +20,7 @@ test('review gates production; approved jobs can start out of order; material hi
   assert.deepEqual(publicQueue(store.list())[1].tickets.map(t=>t.position),[null,null]);
   assert.equal(publicQueue(store.list())[1].tickets[0].customerName,'Private Name');
   await assert.rejects(store.update(b.id,'in-progress',1,true),/workflow/);
-  for(const ticket of [a,b,p]) await store.review(ticket.id,{decision:'approve',operator:'Admin',fields:ticket.machine==='printer'?{paperType:'Adhesive'}:{}},1);
+  for(const ticket of [a,b,p]) await store.review(ticket.id,{decision:'approve',operator:'Admin'},1);
   await store.update(b.id,'in-progress',2,true);
   await store.update(a.id,'in-progress',2,true);
   await store.update(p.id,'in-progress',2,true);
@@ -51,9 +51,10 @@ test('simultaneous usage saves cannot double-count or overwrite another voluntee
 });
 const source=await fs.readFile(new URL('../integrations/google-sheets.gs',import.meta.url),'utf8');
 function googleHarness() {
-  let rows=[],locks=0;
+  let rows=[],locks=0,immediateTelegram=[];
   const ctx=vm.createContext({console, PropertiesService:{getScriptProperties:()=>({getProperty:k=>k==='WORKSHOP_SHARED_SECRET'?'s'.repeat(32):null})}, SpreadsheetApp:{flush:()=>{}}, LockService:{getScriptLock:()=>({waitLock:()=>locks++,hasLock:()=>true,releaseLock:()=>locks--})}});
   vm.runInContext(source,ctx);
+  ctx.processTelegramTicketNotifications_=ticketId=>{immediateTelegram.push(ticketId);return {configured:true,sent:1};};
   ctx.jsonResponse_=v=>JSON.parse(JSON.stringify(v));
   ctx.openBook_=()=>({});
   ctx.ensureTicketSheet_=()=>({getLastRow:()=>rows.length+1,getRange:(r,c,n=1,w=1)=>({getValues:()=>rows.slice(r-2,r-2+n).map(row=>row.slice(c-1,c-1+w)),setValues:values=>{values.forEach((v,i)=>rows[r-2+i]=v);}})});
@@ -62,10 +63,10 @@ function googleHarness() {
   rows=[make('b','F-0002','Foam cutting','2026-10-22T10:01:00Z'),make('a','F-0001','Foam cutting machine','2026-10-22T10:00:00Z'),make('p','P-0001','24-inch roll printer','2026-10-22T10:00:00Z')];
   ctx.publicQueueRows_=()=>rows.map(row=>row.slice(0,17));
   const call=(action,body={},secret='s'.repeat(32))=>ctx.doPost({postData:{contents:JSON.stringify({action,secret,...body})}});
-  return {ctx,call,getRows:()=>rows};
+  return {ctx,call,getRows:()=>rows,getImmediateTelegram:()=>immediateTelegram};
 }
 test('Google staff operations authenticate, allow flexible order, save usage once, and preserve existing receipt fields',()=>{
-  const {ctx,call,getRows}=googleHarness();
+  const {ctx,call,getRows,getImmediateTelegram}=googleHarness();
   assert.equal(call('staffList',{},'bad').status,401);
   const publicList=ctx.doPost({postData:{contents:JSON.stringify({action:'staffList',publicStaff:true})}});
   assert.equal(publicList.ok,true); assert.equal(publicList.tickets.length,3);
@@ -81,6 +82,7 @@ test('Google staff operations authenticate, allow flexible order, save usage onc
   assert.equal(call('staffUsage',{id:'a',input,expectedRevision:2}).ticket.usage.length,1);
   assert.equal(call('staffUsage',{id:'a',input:{...input,used:9},expectedRevision:3}).status,409);
   assert.equal(call('staffUpdate',{id:'a',status:'ready',expectedRevision:3}).ok,true);
+  assert.deepEqual(getImmediateTelegram(),['a']);
   assert.equal(getRows()[1][19],'SECRET12'); assert.equal(getRows()[1][20],'private-key');
   assert.equal(call('staffUpdate',{id:'a',status:'collected',expectedRevision:3}).status,409);
   assert.equal(call('staffUpdate',{id:'a',status:'collected',expectedRevision:4}).ok,true);
@@ -105,13 +107,13 @@ test('Google adapter keeps authentication server-side and fails closed instead o
 });
 
 test('Google review edits details with revision protection, decline reasons and no public leakage',()=>{
-  const {ctx,call,getRows}=googleHarness(); const row=getRows()[0]; row[13]='pending-review'; row[8]=''; row[29]='yes'; row[6]='+13025550123';
+  const {ctx,call,getRows,getImmediateTelegram}=googleHarness(); const row=getRows()[0]; row[13]='pending-review'; row[8]=''; row[29]='yes'; row[6]='+13025550123';
   assert.equal(ctx.publicWorkshopQueue_().machines[1].waiting,1);
   const pending=ctx.publicWorkshopQueue_().machines[1].tickets.find(t=>t.ticketNumber==='F-0002');
   assert.equal(pending.status,'pending-review');assert.equal(pending.position,null);
   assert.equal(ctx.publicWorkshopQueue_().machines[1].inReview,1);
   assert.equal(call('staffUpdate',{id:'b',status:'in-progress',expectedRevision:1}).status,409);
-  assert.equal(call('adminReview',{id:'b',expectedRevision:1,input:{decision:'approve',operator:'Admin',fields:{machine:'printer'}}}).status,400);
+  assert.equal(call('adminReview',{id:'b',expectedRevision:1,input:{decision:'approve',operator:'Admin',fields:{machine:'printer',width:25}}}).status,400);
   const result=call('adminReview',{id:'b',expectedRevision:1,input:{decision:'save',operator:'Admin',fields:{customerName:'Corrected name',width:'',length:'',notes:'Reviewed'}}});
   assert.equal(result.ticket.customerName,'Corrected name'); assert.equal(result.ticket.status,'pending-review');
   assert.equal(result.ticket.width,0); assert.equal(result.ticket.length,0);
@@ -120,6 +122,7 @@ test('Google review edits details with revision protection, decline reasons and 
   assert.equal(call('adminReview',{id:'b',expectedRevision:2,input:{decision:'decline',operator:'Admin'}}).status,400);
   const declined=call('adminReview',{id:'b',expectedRevision:2,input:{decision:'decline',operator:'Admin',reason:'Please send sharper artwork'}});
   assert.equal(declined.ticket.status,'declined'); assert.equal('notification' in declined.ticket.history[1],false);
+  assert.deepEqual(getImmediateTelegram(),['b']);
   assert.equal(getRows()[0][19],'SECRET12'); assert.equal(getRows()[0][30],'Please send sharper artwork');
   assert.ok(!JSON.stringify(ctx.publicWorkshopQueue_()).includes('Private phone'));
 });

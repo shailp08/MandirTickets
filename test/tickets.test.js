@@ -161,8 +161,7 @@ test('HTTP flow: auth, bounded uploads, receipt, privacy, tracking, status and e
   assert.equal((await fetch(download,{headers:{cookie:staffCookie}})).status,404);
   const review=body=>fetch(base+'/api/admin/requests/'+job.id+'/review',{method:'POST',headers:{cookie,'content-type':'application/json'},body:JSON.stringify(body)});
   assert.equal((await fetch(base+'/api/admin/requests/'+job.id+'/review',{method:'POST',headers:{cookie:staffCookie,'content-type':'application/json'},body:JSON.stringify({decision:'approve',expectedRevision:1})})).status,403);
-  assert.equal((await review({decision:'approve',operator:'Admin',expectedRevision:1})).status,400);
-  assert.equal((await review({decision:'approve',operator:'Admin',fields:{paperType:'Adhesive',width:24},expectedRevision:1})).status,200);
+  assert.equal((await review({decision:'approve',operator:'Admin',expectedRevision:1})).status,200);
   assert.equal((await patch({status:'in-progress',expectedRevision:2})).status,200);
   const usageBody = { expectedRevision:3, requestKey:'http-usage-request-123', used:6, waste:0.5, operator:'Test volunteer', note:'Initial run' };
   const usage = () => fetch(base+'/api/tickets/'+job.id+'/usage',{method:'POST',headers:{cookie,'content-type':'application/json'},body:JSON.stringify(usageBody)});

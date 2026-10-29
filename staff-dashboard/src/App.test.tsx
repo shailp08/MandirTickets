@@ -21,6 +21,9 @@ test('keeps FIFO position through search and separates foam jobs', async () => {
   fireEvent.change(screen.getByLabelText('Search tickets'),{target:{value:'P-0002'}});
   fireEvent.click(screen.getByRole('button',{name:'2 P-0002'}));
   expect(screen.getByRole('button',{name:'Start this job'})).toBeEnabled();
+  expect(screen.queryByText('Phone')).not.toBeInTheDocument();
+  expect(screen.queryByText('Requested deadline')).not.toBeInTheDocument();
+  expect(screen.queryByText('Glossy')).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button',{name:'Close ✕'}));
   fireEvent.change(screen.getByLabelText('Search tickets'),{target:{value:''}});
   fireEvent.click(screen.getByRole('button',{name:/Foam cutting/}));
@@ -45,6 +48,9 @@ test('admins see review inbox while production queue contains approved jobs only
   fireEvent.click(screen.getByRole('button',{name:/Admin review/}));
   fireEvent.click(screen.getByRole('button',{name:/P-0003/}));
   expect(screen.getByRole('button',{name:'Approve for staff queue'})).toBeDisabled();
-  expect(screen.getByLabelText('Paper material')).toBeInTheDocument();
-  expect(screen.getByLabelText(/Requested deadline/)).toHaveAttribute('type','date');
+  expect(screen.queryByLabelText('Mobile phone')).not.toBeInTheDocument();
+  expect(screen.queryByLabelText(/Requested deadline/)).not.toBeInTheDocument();
+  expect(screen.queryByLabelText('Paper material')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByLabelText(/I checked the artwork quality/));
+  expect(screen.getByRole('button',{name:'Approve for staff queue'})).toBeEnabled();
 });

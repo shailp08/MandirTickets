@@ -5,8 +5,8 @@ All project files are inside MandirTickets, including the staff-dashboard subfol
 ## Workflow
 
 1. A requester submits printing or foam details and artwork. The receipt says **Awaiting admin review**. The public live queue shows **In Review** until approval, without a production position. No paper-material selector appears on the public form.
-2. An admin signs in and opens **Admin review**. They can open artwork, correct requester/contact information, department, purpose, requested timing, quantity, dimensions, foam thickness, notes, request type, and artwork attachments. Corrected files can be linked from the private workshop Google Drive folder. Local attachments can be renamed or removed. The admin chooses paper for printing.
-3. The admin saves corrections, approves for production, or declines with a reason. Approval requires a paper choice for printing. The interface also requires confirmation that artwork, sizes, quantity, and material were checked. Edits and decisions are recorded in history; concurrent edits cannot overwrite a newer revision.
+2. An admin signs in and opens **Admin review**. They can open artwork and correct requester name, department, purpose, quantity, dimensions, foam thickness, notes, request type, and artwork attachments. Corrected files can be linked from the private workshop Google Drive folder. Local attachments can be renamed or removed.
+3. The admin saves corrections, approves for production, or declines with a reason. The interface requires confirmation that artwork, sizes, and quantity were checked. Edits and decisions are recorded in history; concurrent edits cannot overwrite a newer revision.
 4. Approved requests enter the staff printing or foam queue. Submission time provides the default order, but staff can start any approved job, including several jobs being worked on. Positions are advisory, not promised completion times.
 5. Staff record actual material used and waste, then mark ready for pickup, collected, or cancelled. Cancellation requires a reason. Material history is retained.
 6. Requesters can link a ticket to a private Telegram chat from the receipt. Telegram proactively sends only **ready for pickup** and **declined** updates; `/status` returns every other current state and `/stop` removes the link. The private staff Telegram group receives the same ready/declined updates and can query `/status P-0001`. Messages contain only the ticket number and status.
@@ -23,14 +23,15 @@ The optional Node deployment remains in the repository but is not required for t
 
 ## Telegram bot
 
-Telegram runs entirely from the existing Apps Script project. A one-minute installable trigger polls bot commands and drains a private notification outbox; no phone, SIM, SMS account, Node server, webhook host, or additional deployment is required.
+Telegram runs entirely from the existing Apps Script project. Ready and declined changes made in the dashboard attempt delivery immediately; a one-minute installable trigger handles bot commands, retries, and fallback delivery. No phone, SIM, SMS account, Node server, webhook host, or additional deployment is required.
 
 1. Create the bot with `@BotFather`. Treat the bot token like a password. If it is ever pasted into chat, email, source code, or an issue, revoke it and create a replacement.
 2. Add the fresh token as the `TELEGRAM_BOT_TOKEN` Apps Script Property. Never put it in the React build, repository, or Sheet.
 3. Save the updated Apps Script source and run `setupTelegramNotifications`. It verifies the bot, records its username, disables webhook mode, installs the one-minute trigger, and displays a one-time staff registration command.
 4. Add the bot to the private staff group and send the displayed `/registerstaff ...` command within 24 hours. The bot confirms registration on its next polling run.
-5. Publish a new version of the existing web deployment. A successful ticket receipt then includes **Get Telegram updates**. The link contains a random one-time token whose SHA-256 hash—not the token—is stored privately. If the requester does not opt in before the link expires, they can continue following the public live queue.
-6. Test `/status`, `/stop`, a ready ticket, and a declined ticket using consenting accounts before enabling it for all requesters.
+5. Use **Ticket system → Send Telegram staff test**. This verifies that the bot can actually post to the registered group; a registered chat ID alone does not confirm posting permission. **Show Telegram setup status** also reports the latest staff delivery state.
+6. Publish a new version of the existing web deployment. A successful ticket receipt then includes **Get Telegram updates**. The link contains a random one-time token whose SHA-256 hash—not the token—is stored privately. If the requester does not opt in before the link expires, they can continue following the public live queue.
+7. Test `/status`, `/stop`, a ready ticket, and a declined ticket using consenting accounts before enabling it for all requesters.
 
 Requester chat IDs and delivery state live in hidden `Telegram Subscriptions` and `Telegram Outbox` tabs. Successful API responses are recorded as `sent`, but do not prove the person read the message. Telegram rate limits and temporary server failures receive bounded retries. Interrupted sends become `unknown` and are not automatically repeated, preventing an uncertain pickup message from being duplicated. Telegram failures never roll back a ticket status change.
 
@@ -113,8 +114,8 @@ npm run test:staff
 
 ## Verification
 
-Both production builds passed. The backend suite passed 120 tests and the dashboard/library suite passed 194 tests. Checks cover the deployed Apps Script health check, optional phone and size fields, inline and resumable uploads, queue transport fallback, approval gating, editable fields, stale revisions, file-path restrictions, flexible production ordering, privacy, upload validation, material-entry retries, and duplicate-send prevention. The existing local-data audit passed with two tickets, two files, and no orphaned files.
+Both production builds passed. The backend suite passed 122 tests and the dashboard/library suite passed 194 tests. Checks cover the deployed Apps Script health check, optional phone and size fields, inline and resumable uploads, queue transport fallback, approval gating, editable fields, stale revisions, file-path restrictions, flexible production ordering, privacy, upload validation, material-entry retries, and duplicate-send prevention. The existing local-data audit passed with two tickets, two files, and no orphaned files.
 
-Browser checks used a separate sample database and confirmed both configured accounts, removal of the requester paper selector, awaiting-review receipts, admin corrections/approval, staff starting a later job, actual paper usage, pickup status, and public live-queue behavior. Telegram unit coverage verifies one-time hashed receipt links, command parsing, minimal message copy, and bounded delivery retries. A live bot delivery test still requires the fresh token and private staff group. Sample data and credentials are excluded from the archive. Existing Create React App maintenance warnings remain; builds and tests pass.
+Browser checks used a separate sample database and confirmed both configured accounts, simplified admin review fields, awaiting-review receipts, admin corrections/approval, staff starting a later job, material usage, pickup status, and public live-queue behavior. Telegram unit coverage verifies one-time hashed receipt links, command parsing, minimal message copy, and bounded delivery retries. A live bot delivery test still requires the fresh token and private staff group. Sample data and credentials are excluded from the archive. Existing Create React App maintenance warnings remain; builds and tests pass.
 
 Still needed for launch: revoke any exposed bot token, add the fresh token to Apps Script Properties, run Telegram setup, register the private staff group, publish a new version of the existing Apps Script deployment, and rerun the GitHub Pages workflow. A private Node host is not required.

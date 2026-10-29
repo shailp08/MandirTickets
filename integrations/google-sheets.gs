@@ -56,6 +56,7 @@ function onOpen() {
     .addItem('Set up backend', 'setupMandirTicketSystem')
     .addItem('Set up Telegram notifications', 'setupTelegramNotifications')
     .addItem('Show Telegram setup status', 'showTelegramSetupStatus')
+    .addItem('Send Telegram staff test', 'sendTelegramStaffTest')
     .addItem('Refresh sheet formatting', 'formatTicketSheet')
     .addItem('Audit ticket files', 'showTicketPipelineAudit')
     .addItem('Clean abandoned uploads', 'cleanupAbandonedUploads')
@@ -121,13 +122,45 @@ function showTelegramSetupStatus() {
   var hasTrigger = ScriptApp.getProjectTriggers().some(function(trigger) {
     return trigger.getHandlerFunction() === 'processTelegramNotifications';
   });
+  var latest = 'none recorded';
+  try {
+    var outbox = openBook_().getSheetByName(TELEGRAM_OUTBOX_SHEET);
+    var staffRows = outbox ? telegramSheetRows_(outbox, TELEGRAM_OUTBOX_HEADERS.length).filter(function(row) {
+      return String(row[TELEGRAM_OUT.AUDIENCE]) === 'staff';
+    }) : [];
+    if (staffRows.length) {
+      var row = staffRows[staffRows.length - 1];
+      latest = [telegramText_(row[TELEGRAM_OUT.TICKET_NUMBER]) || 'setup message', String(row[TELEGRAM_OUT.STATUS]), String(row[TELEGRAM_OUT.STATE])].filter(Boolean).join(' · ');
+      if (row[TELEGRAM_OUT.DETAIL]) latest += ' · ' + String(row[TELEGRAM_OUT.DETAIL]);
+    }
+  } catch (_error) { latest = 'could not read delivery journal'; }
   var lines = [
     'Bot: ' + (username ? '@' + username : 'not configured'),
     'Polling trigger: ' + (hasTrigger ? 'installed' : 'not installed'),
-    'Private staff group: ' + (properties.getProperty('TELEGRAM_STAFF_CHAT_ID') ? 'registered' : 'not registered')
+    'Private staff group: ' + (properties.getProperty('TELEGRAM_STAFF_CHAT_ID') ? 'registered' : 'not registered'),
+    'Latest staff delivery: ' + latest
   ];
   SpreadsheetApp.getUi().alert(lines.join('\n'));
-  return { configured: Boolean(username && properties.getProperty('TELEGRAM_BOT_TOKEN')), trigger: hasTrigger, staffRegistered: Boolean(properties.getProperty('TELEGRAM_STAFF_CHAT_ID')) };
+  return { configured: Boolean(username && properties.getProperty('TELEGRAM_BOT_TOKEN')), trigger: hasTrigger, staffRegistered: Boolean(properties.getProperty('TELEGRAM_STAFF_CHAT_ID')), latestStaffDelivery: latest };
+}
+
+function sendTelegramStaffTest() {
+  var properties = PropertiesService.getScriptProperties();
+  var token = String(properties.getProperty('TELEGRAM_BOT_TOKEN') || '').trim();
+  var chatId = String(properties.getProperty('TELEGRAM_STAFF_CHAT_ID') || '').trim();
+  if (!/^\d{6,15}:[A-Za-z0-9_-]{30,}$/.test(token)) throw new Error('Telegram is not configured. Add the fresh bot token to Apps Script Properties and run Telegram setup.');
+  if (!/^-?\d+$/.test(chatId)) throw new Error('The private staff group is not registered. Run Telegram setup and send the one-time registration command in the group.');
+  var response = telegramApiRequest_('sendMessage', {
+    chat_id: chatId,
+    text: 'Telegram staff notifications are connected.',
+    disable_web_page_preview: true
+  }, token);
+  if (!response.ok) {
+    var detail = String(response.description || 'Telegram rejected the test message.').replace(/\s+/g, ' ').trim().slice(0, 220);
+    throw new Error('The bot could not post to the registered staff group: ' + detail + ' Check the group permissions or register the group again.');
+  }
+  SpreadsheetApp.getUi().alert('Telegram test sent to the registered private staff group.');
+  return { ok: true, messageId: String(response.result && response.result.message_id || '') };
 }
 
 function authorizeLargeFileUploads() {
@@ -212,7 +245,16 @@ function doPost(event) {
     input = JSON.parse(raw || (event && event.parameter && event.parameter.payload) || '{}');
 
     if (input.action === 'publicQueue') return jsonResponse_(publicWorkshopQueue_());
-    if (['staffList', 'staffUpdate', 'staffUsage', 'adminReview'].indexOf(input.action) !== -1) return staffAction_(input, lock, input.publicStaff === true);
+    if (['staffList', 'staffUpdate', 'staffUsage', 'adminReview'].indexOf(input.action) !== -1) {
+      input._telegramStatusCommitted = false;
+      var staffResponse = staffAction_(input, lock, input.publicStaff === true);
+      if (lock.hasLock()) lock.releaseLock();
+      if (input._telegramStatusCommitted) {
+        try { processTelegramTicketNotifications_(input.id); }
+        catch (telegramError) { console.error('Immediate Telegram delivery failed: ' + safeError_(telegramError)); }
+      }
+      return staffResponse;
+    }
     // Preserve compatibility with the optional Node server's authenticated Sheets mirror.
     if (Array.isArray(input.row)) return syncServerRow_(input, lock);
     if (input.action !== 'createTicket') return jsonResponse_({ ok: false, error: 'Unsupported action.' });
@@ -1086,7 +1128,7 @@ function validateUsage(ticket, input) {
   const operator = typeof input.operator === 'string' ? input.operator.trim() : '';
   const note = typeof input.note === 'string' ? input.note.trim() : '';
   if (!operator || operator.length > 100 || !note || note.length > 500) workshopFail_('Add your name and a short usage note (up to 500 characters).');
-  return { requestKey: input.requestKey, used, waste, operator, note, material: ticket.machine === 'printer' ? ticket.paperType : `Foam ${ticket.thickness} in`, unit: ticket.machine === 'printer' ? 'linear ft' : 'sq ft' };
+  return { requestKey: input.requestKey, used, waste, operator, note, material: ticket.machine === 'printer' ? 'Poster printing' : `Foam ${ticket.thickness} in`, unit: ticket.machine === 'printer' ? 'linear ft' : 'sq ft' };
 }
 function normalizePhone(phone, consent) {
   if (!consent) return phone;
@@ -1125,7 +1167,6 @@ function validateReview(ticket, input) {
   const quantity = num('quantity',10000); if (!Number.isInteger(quantity)) workshopFail_('Quantity must be a whole number.');
   const paperType = machine === 'printer' ? str('paperType',50) : '';
   if (paperType && !['Polypropylene','Adhesive','Canvas','Glossy','Standard'].includes(paperType)) workshopFail_('Choose a paper material.');
-  if (input.decision === 'approve' && machine === 'printer' && !paperType) workshopFail_('Choose a paper material before approval.');
   let files = fields.files === undefined ? ticket.files : fields.files;
   if (!Array.isArray(files) || files.length > 10) workshopFail_('Attach up to ten artwork files.');
   files = files.map(f => {
@@ -1341,6 +1382,8 @@ function staffAction_(input, lock, publicAccess) {
     sheet.getRange(index + 2, 1, 1, HEADERS.length).setValues([row.map(escapeCell_)]);
     SpreadsheetApp.flush();
     invalidatePublicQueueCache_();
+    input._telegramStatusCommitted = (input.action === 'staffUpdate' && input.status === 'ready')
+      || (input.action === 'adminReview' && input.input && input.input.decision === 'decline');
     return jsonResponse_({ ok: true, ticket: decorateTelegramTickets_(book, [ticket])[0] });
   } catch (error) {
     return jsonResponse_({ ok: false, status: error.status || 503, error: error.status ? error.message : 'Google Sheets could not complete this operation. Refresh and retry.' });
@@ -1690,10 +1733,12 @@ function reconcileTelegramEvents_(book, subscriptions, outbox, properties) {
   return created;
 }
 
-function claimTelegramOutbox_(book, outbox) {
+function claimTelegramOutbox_(book, outbox, onlyTicketId, batchSize) {
   var now = Date.now();
   var ticketMap = telegramTicketMap_(book).byId;
   var claimed = [];
+  var ticketFilter = String(onlyTicketId || '');
+  var limit = Number.isSafeInteger(batchSize) && batchSize > 0 ? batchSize : TELEGRAM_SEND_BATCH_SIZE;
   telegramSheetRows_(outbox, TELEGRAM_OUTBOX_HEADERS.length).forEach(function(row, index) {
     var state = String(row[TELEGRAM_OUT.STATE] || '');
     var updated = telegramDateMs_(row[TELEGRAM_OUT.UPDATED]);
@@ -1704,7 +1749,8 @@ function claimTelegramOutbox_(book, outbox) {
       outbox.getRange(index + 2, 1, 1, row.length).setValues([row.map(escapeCell_)]);
       return;
     }
-    if (state !== 'pending' || telegramDateMs_(row[TELEGRAM_OUT.NEXT_ATTEMPT]) > now || claimed.length >= TELEGRAM_SEND_BATCH_SIZE) return;
+    if (ticketFilter && String(row[TELEGRAM_OUT.TICKET_ID] || '') !== ticketFilter) return;
+    if (state !== 'pending' || telegramDateMs_(row[TELEGRAM_OUT.NEXT_ATTEMPT]) > now || claimed.length >= limit) return;
     var ticket = ticketMap.get(String(row[TELEGRAM_OUT.TICKET_ID] || ''));
     if (row[TELEGRAM_OUT.STATUS] === 'ready' && ticket && ticket.status !== 'ready') {
       row[TELEGRAM_OUT.STATE] = 'superseded';
@@ -1774,6 +1820,13 @@ function updateTelegramDelivery_(attempt, outcome, responseCode) {
     row[TELEGRAM_OUT.DETAIL] = outcome.detail;
     sheets.outbox.getRange(rowNumber, 1, 1, row.length).setValues([row.map(escapeCell_)]);
     if (responseCode === 403 && attempt.audience === 'requester') disableTelegramChat_(sheets.subscriptions, sheets.outbox, attempt.chatId);
+    if (responseCode === 403 && attempt.audience === 'staff') {
+      var properties = PropertiesService.getScriptProperties();
+      if (String(properties.getProperty('TELEGRAM_STAFF_CHAT_ID') || '') === String(attempt.chatId)) {
+        properties.deleteProperty('TELEGRAM_STAFF_CHAT_ID');
+        properties.deleteProperty('TELEGRAM_STAFF_REGISTERED_AT');
+      }
+    }
     SpreadsheetApp.flush();
   } finally {
     if (lock.hasLock()) lock.releaseLock();
@@ -1781,6 +1834,17 @@ function updateTelegramDelivery_(attempt, outcome, responseCode) {
 }
 
 function processTelegramNotifications() {
+  return processTelegramNotifications_({ pollUpdates: true });
+}
+
+function processTelegramTicketNotifications_(ticketId) {
+  var normalized = String(ticketId || '');
+  if (!normalized) return { configured: false, updates: 0, queued: 0, sent: 0 };
+  return processTelegramNotifications_({ pollUpdates: false, ticketId: normalized, batchSize: 4 });
+}
+
+function processTelegramNotifications_(options) {
+  options = options || {};
   var properties = PropertiesService.getScriptProperties();
   var token = String(properties.getProperty('TELEGRAM_BOT_TOKEN') || '').trim();
   if (!/^\d{6,15}:[A-Za-z0-9_-]{30,}$/.test(token)) return { configured: false, updates: 0, queued: 0, sent: 0 };
@@ -1791,21 +1855,25 @@ function processTelegramNotifications() {
   var queued = 0;
   try {
     var offset = Number(properties.getProperty('TELEGRAM_UPDATE_OFFSET') || 0);
-    var response = telegramApiRequest_('getUpdates', { offset: offset, limit: 100, timeout: 0, allowed_updates: ['message'] }, token);
-    if (!response.ok || !Array.isArray(response.result)) throw new Error('Telegram update polling failed. Check the bot token and setup status.');
+    var updates = [];
+    if (options.pollUpdates !== false) {
+      var response = telegramApiRequest_('getUpdates', { offset: offset, limit: 100, timeout: 0, allowed_updates: ['message'] }, token);
+      if (!response.ok || !Array.isArray(response.result)) throw new Error('Telegram update polling failed. Check the bot token and setup status.');
+      updates = response.result;
+    }
     var book = openBook_();
     var sheets = ensureTelegramSheets_(book);
     var nextOffset = offset;
-    response.result.forEach(function(update) {
+    updates.forEach(function(update) {
       try { handleTelegramUpdate_(update, book, sheets.subscriptions, sheets.outbox, properties); }
       catch (error) { console.error('Telegram update ' + String(update.update_id) + ' failed: ' + safeError_(error)); }
       if (Number.isSafeInteger(update.update_id)) nextOffset = Math.max(nextOffset, update.update_id + 1);
       updateCount++;
     });
     queued = reconcileTelegramEvents_(book, sheets.subscriptions, sheets.outbox, properties);
-    claimed = claimTelegramOutbox_(book, sheets.outbox);
+    claimed = claimTelegramOutbox_(book, sheets.outbox, options.ticketId, options.batchSize);
     SpreadsheetApp.flush();
-    properties.setProperty('TELEGRAM_UPDATE_OFFSET', String(nextOffset));
+    if (options.pollUpdates !== false) properties.setProperty('TELEGRAM_UPDATE_OFFSET', String(nextOffset));
   } finally {
     if (lock.hasLock()) lock.releaseLock();
   }

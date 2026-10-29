@@ -19,15 +19,16 @@ Never publish the spreadsheet, share the upload folder, commit the deployment UR
 
 ## Telegram notifications
 
-Telegram is the primary notification channel. It uses the same Apps Script project and a one-minute trigger, so no Node server or additional host is required. Requesters receive proactive messages only when a ticket is **ready for pickup** or **declined**. They can use `/status` for every other state and `/stop` to remove their private-chat link. The private staff group receives the same ready and declined updates and can query a ticket with `/status P-0001`.
+Telegram is the primary notification channel. It uses the same Apps Script project, so no Node server or additional host is required. Dashboard changes to **ready for pickup** or **declined** attempt delivery immediately, while a one-minute trigger handles bot commands, retries, and fallback delivery. Requesters can use `/status` for every other state and `/stop` to remove their private-chat link. The private staff group receives the same ready and declined updates and can query a ticket with `/status P-0001`.
 
 1. Create the bot with `@BotFather`. If its token was ever pasted into chat, email, a ticket, or source code, revoke it and generate a replacement before continuing.
 2. In **Apps Script → Project Settings → Script Properties**, add `TELEGRAM_BOT_TOKEN` with the fresh token. Do not put it in this repository or any Sheet cell.
 3. Save the current `google-sheets.gs`, select `setupTelegramNotifications`, and click **Run**. Approve the external-request and trigger permissions. The setup verifies the token, records the bot username, switches off webhook mode, creates the private subscription/outbox tabs, and installs the one-minute trigger.
 4. Read the registration command shown by the setup dialog. Add the bot to the private staff group and send that one-time `/registerstaff ...` command in the group within 24 hours.
 5. Wait up to one minute for the bot to confirm that the group is registered. Use **Ticket system → Show Telegram setup status** to verify the bot, trigger, and staff group.
-6. Publish a new version of the existing Apps Script web deployment, keeping the same `/exec` URL, and rebuild the GitHub Pages site.
-7. Submit a test ticket, use its **Get Telegram updates** receipt button, and confirm `/status`. Then exercise one declined test and one ready-for-pickup test with consenting accounts.
+6. Use **Ticket system → Send Telegram staff test**. If it fails, the error identifies a stale group registration or missing bot posting permission. Setup status also shows the latest staff delivery journal entry.
+7. Publish a new version of the existing Apps Script web deployment, keeping the same `/exec` URL, and rebuild the GitHub Pages site.
+8. Submit a test ticket, use its **Get Telegram updates** receipt button, and confirm `/status`. Then exercise one declined test and one ready-for-pickup test with consenting accounts.
 
 The receipt uses a random one-time token valid for 24 hours. Only its SHA-256 hash is stored. If the requester does not opt in before it expires, they can continue following the public live queue. Telegram chat and user IDs are kept in the hidden `Telegram Subscriptions` tab; delivery attempts are journaled in `Telegram Outbox`. Messages contain only the ticket number and status—no phone number, contact information, artwork, purpose, or decline reason.
 
@@ -38,7 +39,7 @@ A successful Telegram API response is recorded as `sent`; it does not prove that
 - Open the private **Mandir Workshop Tickets** spreadsheet in Google Drive and use the `Tickets` tab as the staff queue. Do not link the private sheet from the public website.
 - New submissions appear as one row with status `pending-review`. The most useful staff columns are Queue number (B), Name (D), Purpose (F), Needed by (M), Status (N), and Files (P).
 - Use the staff dashboard to move requests through `queued`, `in-progress`, `ready`, `collected`, or `cancelled`. The public live queue reflects active status changes.
-- Telegram ready/declined notifications are queued from those dashboard history changes and normally appear within one minute. Treat the Sheet as a private record; direct status-cell edits do not create a staff-history event and therefore do not send Telegram updates.
+- Telegram ready/declined notifications are queued from those dashboard history changes and normally send immediately, with the one-minute worker as a fallback. Treat the Sheet as a private record; direct status-cell edits do not create a staff-history event and therefore do not send Telegram updates.
 - To print the submitted artwork, open its private Drive link in Files (column P), then print or download it from the Drive preview.
 - To print the ticket details, select the cells in that ticket's row, choose **File → Print**, and set **Print** to **Selected cells**. Landscape orientation is usually easiest to read.
 - The hidden Ticket ID, Tracking code, Request key, and Request fingerprint columns support integrity and idempotency. Do not delete or reuse them.

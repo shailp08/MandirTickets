@@ -161,6 +161,34 @@ test('Telegram transport errors do not expose token-bearing URLs', () => {
   );
 });
 
+test('Telegram staff test posts a minimal message to the registered group', () => {
+  const properties = propertiesStore({
+    TELEGRAM_BOT_TOKEN: `123456789:${'A'.repeat(35)}`,
+    TELEGRAM_STAFF_CHAT_ID: '-1001234567890',
+  });
+  let payload;
+  let alert = '';
+  const isolated = loadContext({
+    PropertiesService: { getScriptProperties: () => properties },
+    SpreadsheetApp: { getUi: () => ({ alert(message) { alert = message; } }) },
+    UrlFetchApp: {
+      fetch(_url, options) {
+        payload = JSON.parse(options.payload);
+        return {
+          getResponseCode: () => 200,
+          getContentText: () => JSON.stringify({ ok: true, result: { message_id: 91 } }),
+        };
+      },
+    },
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(isolated.sendTelegramStaffTest())), { ok: true, messageId: '91' });
+  assert.equal(payload.chat_id, '-1001234567890');
+  assert.equal(payload.text, 'Telegram staff notifications are connected.');
+  assert.doesNotMatch(payload.text, /phone|contact|artwork|purpose/i);
+  assert.match(alert, /test sent/i);
+});
+
 test('Telegram receipt links use one-time hashed tokens and stop rotating after linkage', () => {
   const properties = propertiesStore({
     TELEGRAM_BOT_TOKEN: `123456789:${'A'.repeat(35)}`,
@@ -246,6 +274,31 @@ test('Apps Script backend accepts calendar deadlines and removes the legacy note
   assert.equal(context.validatePublicTicket_({ ...baseTicket(), neededBy: undefined }).neededBy, 'No rush');
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), neededBy: false }), /needed-by date/i);
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), neededByDate: '2099-02-29' }), /valid needed-by date/i);
+});
+
+test('Apps Script review approves print work without staff-only phone, deadline, or paper inputs', () => {
+  const ticket = {
+    status: 'pending-review',
+    machine: 'printer',
+    customerName: 'Requester',
+    department: 'Events',
+    purpose: 'Poster',
+    phone: '',
+    smsConsent: false,
+    neededBy: 'No rush',
+    quantity: 1,
+    width: 24,
+    length: 36,
+    thickness: 0,
+    paperType: '',
+    notes: '',
+    files: [{ originalName: 'poster.pdf', url: 'https://drive.google.com/file/d/abc123/view' }],
+  };
+  const result = context.validateReview(ticket, { decision: 'approve', operator: 'Admin', fields: {} });
+  assert.equal(result.status, 'queued');
+  assert.equal(result.edits.paperType, '');
+  assert.equal(result.edits.phone, '');
+  assert.equal(result.edits.neededBy, 'No rush');
 });
 
 test('Apps Script backend requires a safe print file and rejects bot submissions', () => {
