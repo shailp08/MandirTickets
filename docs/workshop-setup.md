@@ -9,7 +9,7 @@ All project files are inside MandirTickets, including the staff-dashboard subfol
 3. The admin saves corrections, approves for production, or declines with a reason. Approval requires a paper choice for printing. The interface also requires confirmation that artwork, sizes, quantity, and material were checked. Edits and decisions are recorded in history; concurrent edits cannot overwrite a newer revision.
 4. Approved requests enter the staff printing or foam queue. Submission time provides the default order, but staff can start any approved job, including several jobs being worked on. Positions are advisory, not promised completion times.
 5. Staff record actual material used and waste, then mark ready for pickup, collected, or cancelled. Cancellation requires a reason. Material history is retained.
-6. Requesters who opt in receive a Textbee notification when ready, declined, or cancelled. Private tracking shows the current status and review/cancellation reason. The public queue shows the requester’s name below each ticket number. Phone numbers, artwork, and review reasons remain private.
+6. Requesters can link a ticket to a private Telegram chat from the receipt. Telegram proactively sends only **ready for pickup** and **declined** updates; `/status` returns every other current state and `/stop` removes the link. The private staff Telegram group receives the same ready/declined updates and can query `/status P-0001`. Messages contain only the ticket number and status.
 
 The workflow does not send commands to the printer or foam cutter. Trained volunteers operate the machines. Material totals measure recorded consumption, not remaining inventory, ink levels, or automatic machine telemetry.
 
@@ -21,23 +21,18 @@ After entering the staff screen, the dashboard opens the review workspace and pr
 
 The optional Node deployment remains in the repository but is not required for this mode.
 
-## Textbee free tier
+## Telegram bot
 
-As checked on October 23, 2026, Textbee’s free plan allows **50 messages per day and 300 per month**, including received messages, on one Android device. It uses that device’s SIM number. It does not provide a free sender number or mobile plan.
+Telegram runs entirely from the existing Apps Script project. A one-minute installable trigger polls bot commands and drains a private notification outbox; no phone, SIM, SMS account, Node server, webhook host, or additional deployment is required.
 
-Use a **dedicated mandir Android phone and SIM**, so no volunteer’s personal number is used. The phone needs power, an internet connection, permission to run Textbee in the background, and an active SMS-capable SIM plan. Confirm the current allowance in the Textbee account before the Diwali rush.
+1. Create the bot with `@BotFather`. Treat the bot token like a password. If it is ever pasted into chat, email, source code, or an issue, revoke it and create a replacement.
+2. Add the fresh token as the `TELEGRAM_BOT_TOKEN` Apps Script Property. Never put it in the React build, repository, or Sheet.
+3. Save the updated Apps Script source and run `setupTelegramNotifications`. It verifies the bot, records its username, disables webhook mode, installs the one-minute trigger, and displays a one-time staff registration command.
+4. Add the bot to the private staff group and send the displayed `/registerstaff ...` command within 24 hours. The bot confirms registration on its next polling run.
+5. Publish a new version of the existing web deployment. A successful ticket receipt then includes **Get Telegram updates**. The link contains a random one-time token whose SHA-256 hash—not the token—is stored privately. If the link expires before it is used, the requester can enter the receipt credentials in the private tracker to get a replacement.
+6. Test `/status`, `/stop`, a ready ticket, and a declined ticket using consenting accounts before enabling it for all requesters.
 
-1. Create/verify the mandir’s Textbee account and install the official app on its Android phone.
-2. Pair the phone and enable sending. Record the device ID and create an API key.
-3. Put `TEXTBEE_API_KEY` and `TEXTBEE_DEVICE_ID` in the **private server environment**, never in the public React app or Google Sheet. No secret needs to be pasted into this chat.
-4. Keep a persistent disk mounted at `DATA_DIR`; run one server instance. `notifications.json` is the durable send journal and must survive restarts and deployments. Back it up along with other server data. Losing this journal can resend previously processed notification events.
-5. Send a live test only to a consenting coordinator’s number and confirm both the phone and Textbee dashboard show the expected outcome. This live delivery test has not been performed.
-
-The app uses Textbee’s authenticated `POST /api/v1/gateway/send-sms` endpoint and always specifies the dedicated device ID. It normalizes US numbers and accepts international numbers with country codes. Opt-in is optional; legacy requests are not opted in automatically.
-
-A Textbee acceptance is labeled **delivery unconfirmed**, not delivered. The Textbee dashboard is the place to check carrier delivery and incoming replies; this version does not synchronize delivery webhooks or replies. Rejected sends, including free-tier limits, remain visible on the ticket and can be retried after the cause is fixed. Timeouts and interrupted sends are marked **unknown** and are not automatically retried, to avoid duplicates. Check Textbee before following up manually. Notifications awaiting configuration are retained; obsolete pickup messages are skipped if the ticket has already moved on.
-
-Sources: [Free plan](https://textbee.dev/free-sms-api), [Setup requirements](https://textbee.dev/docs/getting-started), [Sending API and response semantics](https://textbee.dev/docs/sending-sms/sending-sms).
+Requester chat IDs and delivery state live in hidden `Telegram Subscriptions` and `Telegram Outbox` tabs. Successful API responses are recorded as `sent`, but do not prove the person read the message. Telegram rate limits and temporary server failures receive bounded retries. Interrupted sends become `unknown` and are not automatically repeated, preventing an uncertain pickup message from being duplicated. Telegram failures never roll back a ticket status change.
 
 ## Existing live system
 
@@ -57,10 +52,11 @@ To find the editor, open the ticket Google Sheet and choose **Extensions → App
 
 1. Back up the ticket Sheet and existing Apps Script source; retain the previous deployment version for rollback.
 2. Replace the existing ticket script with `MandirTickets/integrations/google-sheets.gs`. Preserve existing Script Properties, Sheet ID, upload-folder ID, and allowed upload origins. **Do not run new-system setup or create a replacement Sheet.**
-3. Publish a new version of the **existing deployment**, keeping its `/exec` URL. The script preserves the legacy email and cost columns, then stores Material usage, Staff history, SMS consent, and Review reason after them. Existing receipt codes, IDs, timestamps, costs, and Drive links are preserved.
-4. Before opening the staff desk, run `holdUnreviewedQueueForAdminReview` from the script editor if the existing queued backlog has not already been approved. It moves only unstarted queued requests without an approval history into review. Active, ready, collected, and cancelled work is preserved. It is safe to rerun without duplicating these holds. Direct Sheet changes bypass application review and revision controls; use the app afterward.
-5. In GitHub repository variables, retain `VITE_GOOGLE_SCRIPT_URL` with the existing `/exec` URL. `STAFF_API_URL` may remain empty. Run the **Verify and deploy GitHub Pages** workflow; it passes the Apps Script URL to both the public form and staff dashboard.
-6. Verify a clearly labeled real request for each machine with the coordinator: submit a small DXF/SVG and a print file, confirm the Drive link appears on the staff ticket, edit/approve, start, log material, mark ready, and collect. Also test decline with a private reason.
+3. Put a newly generated bot token directly in the `TELEGRAM_BOT_TOKEN` Script Property, run `setupTelegramNotifications`, add the bot to the private staff group, and complete the one-time group registration command. Do not paste the token into chat or source code.
+4. Publish a new version of the **existing deployment**, keeping its `/exec` URL. The script preserves the legacy email, cost, and SMS columns, and stores Telegram subscriptions/delivery attempts in separate hidden tabs. Existing receipt codes, IDs, timestamps, costs, and Drive links are preserved.
+5. Before opening the staff desk, run `holdUnreviewedQueueForAdminReview` from the script editor if the existing queued backlog has not already been approved. It moves only unstarted queued requests without an approval history into review. Active, ready, collected, and cancelled work is preserved. It is safe to rerun without duplicating these holds. Direct Sheet changes bypass application review, revision controls, and Telegram event generation; use the app afterward.
+6. In GitHub repository variables, retain `VITE_GOOGLE_SCRIPT_URL` with the existing `/exec` URL. `STAFF_API_URL` may remain empty. Run the **Verify and deploy GitHub Pages** workflow; it passes the Apps Script URL to both the public form and staff dashboard.
+7. Verify a clearly labeled real request for each machine with the coordinator: submit a small DXF/SVG and a print file, link each receipt to Telegram, confirm `/status`, edit/approve, start, log material, and mark ready. Also test one decline. Confirm the requester and private staff group each receive one minimal status message.
 
 Google Drive artwork remains private. Give authorized admins/staff access to the existing workshop folder; the app does not make files public.
 
@@ -81,15 +77,13 @@ STAFF_PASSWORD=SET-PRIVATELY
 WORKSHOP_GOOGLE_SCRIPT_URL=THE-EXISTING-EXEC-URL
 WORKSHOP_SHARED_SECRET=THE-SAME-VALUE-AS-SCRIPT-PROPERTIES
 PUBLIC_REQUEST_URL=https://shailp08.github.io/MandirTickets/
-TEXTBEE_API_KEY=SET-PRIVATELY
-TEXTBEE_DEVICE_ID=YOUR-DEDICATED-PHONE-ID
 DATA_DIR=/app/data
 UPLOAD_REQUEST_TIMEOUT_MS=900000
 SHEETS_WEBHOOK_URL=
 SHEETS_SHARED_SECRET=
 ```
 
-Mount durable storage at `/app/data` with write access for the application user. Keep one server instance. Sessions last eight hours and are cleared on restart. The Google Sheet remains the source of truth for tickets, review history, and material usage; local durable storage keeps the SMS send journal. Google failures never create a replacement local production queue.
+Mount durable storage at `/app/data` with write access for the application user. Keep one server instance. Sessions last eight hours and are cleared on restart. The Google Sheet remains the source of truth for tickets, review history, material usage, and Telegram delivery state. Google failures never create a replacement local production queue.
 
 The archive contains one `MandirTickets` folder. From inside that folder:
 
@@ -109,7 +103,7 @@ npm run check
 npm start
 ```
 
-For a separate local test database, leave `WORKSHOP_GOOGLE_SCRIPT_URL`, `SHEETS_WEBHOOK_URL`, and Textbee credentials blank; set `HOST=127.0.0.1` and point `DATA_DIR` to a test directory. Open `http://localhost:3000/` and `/staff/`. Local mode is for development, not a replacement for the live Google system. Local-upload production mode additionally requires the existing ClamAV configuration.
+For a separate local test database, leave `WORKSHOP_GOOGLE_SCRIPT_URL`, `SHEETS_WEBHOOK_URL`, and legacy Textbee credentials blank; set `HOST=127.0.0.1` and point `DATA_DIR` to a test directory. Open `http://localhost:3000/` and `/staff/`. Telegram receipt links are issued only by a configured Apps Script backend. Local mode is for development, not a replacement for the live Google system. Local-upload production mode additionally requires the existing ClamAV configuration.
 
 Dashboard-only tests, from MandirTickets:
 
@@ -119,8 +113,8 @@ npm run test:staff
 
 ## Verification
 
-Both production builds passed. The backend suite passed 115 tests and the dashboard/library suite passed 194 tests. Checks cover the deployed Apps Script health check, optional phone and size fields, inline and resumable uploads, queue transport fallback, approval gating, editable fields, stale revisions, file-path restrictions, flexible production ordering, privacy, upload validation, material-entry retries, and duplicate-send prevention. The existing local-data audit passed with two tickets, two files, and no orphaned files.
+Both production builds passed. The backend suite passed 120 tests and the dashboard/library suite passed 194 tests. Checks cover the deployed Apps Script health check, optional phone and size fields, inline and resumable uploads, queue transport fallback, approval gating, editable fields, stale revisions, file-path restrictions, flexible production ordering, privacy, upload validation, material-entry retries, and duplicate-send prevention. The existing local-data audit passed with two tickets, two files, and no orphaned files.
 
-Browser checks used a separate sample database and confirmed both configured accounts, removal of the requester paper selector, awaiting-review receipts, admin corrections/approval, staff starting a later job, actual paper usage, pickup status, a visible unconfigured Textbee notification, and decline reasons in private tracking. Sample data and credentials are excluded from the archive. Existing Create React App maintenance warnings remain; builds and tests pass.
+Browser checks used a separate sample database and confirmed both configured accounts, removal of the requester paper selector, awaiting-review receipts, admin corrections/approval, staff starting a later job, actual paper usage, pickup status, and decline reasons in private tracking. Telegram unit coverage verifies one-time hashed receipt links, command parsing, minimal message copy, and bounded delivery retries. A live bot delivery test still requires the fresh token and private staff group. Sample data and credentials are excluded from the archive. Existing Create React App maintenance warnings remain; builds and tests pass.
 
-Still needed for launch: publish a new version of the existing Apps Script deployment and rerun the GitHub Pages workflow. A private Node host is not required. A dedicated Textbee phone/SIM/account is needed only if SMS notifications are enabled later.
+Still needed for launch: revoke any exposed bot token, add the fresh token to Apps Script Properties, run Telegram setup, register the private staff group, publish a new version of the existing Apps Script deployment, and rerun the GitHub Pages workflow. A private Node host is not required.

@@ -6,12 +6,13 @@ import { createServer } from 'vite';
 
 let viteServer;
 let TicketForm;
+let TicketTracker;
 const originalLocation = globalThis.location;
 
 test.before(async () => {
   globalThis.location = { hostname: 'localhost', pathname: '/' };
   viteServer = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-  ({ TicketForm } = await viteServer.ssrLoadModule('/src/App.jsx'));
+  ({ TicketForm, TicketTracker } = await viteServer.ssrLoadModule('/src/App.jsx'));
 });
 
 test.after(async () => {
@@ -19,7 +20,7 @@ test.after(async () => {
   globalThis.location = originalLocation;
 });
 
-function renderTicketForm(machine) {
+function renderWithHooks(component) {
   const internals = React.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
   const originalDispatcher = internals.H;
   internals.H = {
@@ -28,10 +29,14 @@ function renderTicketForm(machine) {
     useState: value => [typeof value === 'function' ? value() : value, () => {}],
   };
   try {
-    return renderToStaticMarkup(TicketForm({ machine, onChangeMachine() {}, onTicket() {} }));
+    return renderToStaticMarkup(component());
   } finally {
     internals.H = originalDispatcher;
   }
+}
+
+function renderTicketForm(machine) {
+  return renderWithHooks(() => TicketForm({ machine, onChangeMachine() {}, onTicket() {} }));
 }
 
 test('poster and foam customer forms do not ask for a needed-by date', () => {
@@ -53,4 +58,12 @@ test('customer forms omit phone and make finished size optional', () => {
       assert.doesNotMatch(input, /\srequired(?:=|\s|>)/i, `${field} should be optional`);
     }
   }
+});
+
+test('private tracker can regenerate a Telegram link with receipt credentials', () => {
+  const html = renderWithHooks(() => TicketTracker());
+  assert.match(html, /Private ticket tracking/i);
+  assert.match(html, /name="ticket"/i);
+  assert.match(html, /name="code"/i);
+  assert.match(html, /new Telegram link/i);
 });

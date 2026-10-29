@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
@@ -28,6 +29,8 @@ const blob = bytes => ({
   getBytes: () => Array.from(bytes),
   getDataAsString: charset => Buffer.from(bytes).toString(String(charset).toUpperCase() === 'UTF-8' ? 'utf8' : 'latin1'),
 });
+
+const digestBytes = value => Array.from(crypto.createHash('sha256').update(String(value)).digest(), byte => byte > 127 ? byte - 256 : byte);
 
 const baseTicket = () => ({
   action: 'createTicket',
@@ -115,6 +118,97 @@ test('request-key tracking distinguishes a pending save from a permanent backend
   assert.equal(properties.getProperty(`FAILED_${requestKey}`), null);
 });
 
+test('Telegram commands and push copy expose only ticket status', () => {
+  assert.deepEqual(JSON.parse(JSON.stringify(context.parseTelegramCommand_('/status@DelMandirDesignbot P-0042'))), { command: 'status', argument: 'P-0042' });
+  assert.deepEqual(JSON.parse(JSON.stringify(context.parseTelegramCommand_('/stop'))), { command: 'stop', argument: '' });
+  assert.equal(context.parseTelegramCommand_('what is my status?'), null);
+  assert.equal(context.telegramStatusLabel_('pending-review'), 'Awaiting review');
+  assert.equal(context.telegramStatusLabel_('in-progress'), 'In progress');
+  assert.equal(context.telegramPushMessage_('P-0042', 'ready'), 'P-0042 is ready for pickup.');
+  assert.equal(context.telegramPushMessage_('F-0011', 'declined'), 'F-0011 was declined.');
+  assert.equal(context.telegramPushMessage_('P-0042', 'queued'), '');
+  assert.doesNotMatch(context.telegramPushMessage_('P-0042', 'ready'), /phone|contact|https?:|@/i);
+});
+
+test('Telegram delivery outcomes retry only definite transient failures', () => {
+  const sent = context.telegramDeliveryOutcome_({ ok: true, result: { message_id: 81 } }, 1, 1000);
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)), { state: 'sent', messageId: '81', nextAttempt: '', detail: 'Accepted by Telegram.' });
+
+  const limited = context.telegramDeliveryOutcome_({ ok: false, httpCode: 429, parameters: { retry_after: 12 } }, 1, 1000);
+  assert.equal(limited.state, 'pending');
+  assert.equal(new Date(limited.nextAttempt).getTime(), 13000);
+
+  const unavailable = context.telegramDeliveryOutcome_({ ok: false, httpCode: 503 }, 2, 1000);
+  assert.equal(unavailable.state, 'pending');
+  const rejected = context.telegramDeliveryOutcome_({ ok: false, httpCode: 403, description: 'bot was blocked by the user' }, 1, 1000);
+  assert.equal(rejected.state, 'failed');
+  assert.match(rejected.detail, /blocked/i);
+});
+
+test('Telegram transport errors do not expose token-bearing URLs', () => {
+  const isolated = loadContext({
+    UrlFetchApp: {
+      fetch() { throw new Error('Request failed for https://api.telegram.org/botsecret-token/getMe'); },
+    },
+  });
+  assert.throws(
+    () => isolated.telegramApiRequest_('getMe', {}, 'secret-token'),
+    error => {
+      assert.equal(error.message, 'Telegram could not be reached. Try again shortly.');
+      assert.doesNotMatch(error.message, /secret-token|api\.telegram\.org/i);
+      return true;
+    },
+  );
+});
+
+test('Telegram receipt links use one-time hashed tokens and stop rotating after linkage', () => {
+  const properties = propertiesStore({
+    TELEGRAM_BOT_TOKEN: `123456789:${'A'.repeat(35)}`,
+    TELEGRAM_BOT_USERNAME: 'DelMandirDesignbot',
+  });
+  const rows = [];
+  const subscriptions = {
+    getLastRow: () => rows.length + 1,
+    getRange(_row, column) {
+      return {
+        getValues: () => [rows[_row - 2]],
+        setValues(values) { rows[_row - 2] = values[0].slice(); },
+        createTextFinder(value) {
+          return {
+            matchEntireCell() { return this; },
+            findNext() {
+              const index = rows.findIndex(row => String(row[column - 1]) === String(value));
+              return index < 0 ? null : { getRow: () => index + 2 };
+            },
+          };
+        },
+      };
+    },
+  };
+  const lock = { locked: false, waitLock() { this.locked = true; }, hasLock() { return this.locked; }, releaseLock() { this.locked = false; } };
+  const isolated = loadContext({
+    PropertiesService: { getScriptProperties: () => properties },
+    LockService: { getScriptLock: () => lock },
+    SpreadsheetApp: { flush() {} },
+    Utilities: {
+      DigestAlgorithm: { SHA_256: 'sha256' },
+      computeDigest: (_algorithm, value) => digestBytes(value),
+      getUuid: () => '00112233-4455-6677-8899-aabbccddeeff',
+    },
+  });
+  isolated.ensureTelegramSheets_ = () => ({ subscriptions });
+
+  const link = isolated.telegramLinkForTicket_({}, { id: 'ticket-1', ticketNumber: 'P-0042' });
+  assert.equal(link.url, 'https://t.me/DelMandirDesignbot?start=00112233445566778899aabbccddeeff');
+  assert.equal(rows.length, 1);
+  assert.notEqual(rows[0][7], '00112233445566778899aabbccddeeff');
+  assert.equal(rows[0][7], crypto.createHash('sha256').update('00112233445566778899aabbccddeeff').digest('hex'));
+
+  rows[0][2] = "'-100123456";
+  rows[0][4] = 'enabled';
+  assert.deepEqual(JSON.parse(JSON.stringify(isolated.telegramLinkForTicket_({}, { id: 'ticket-1', ticketNumber: 'P-0042' }))), { linked: true });
+});
+
 test('a transient request-key tracking read failure remains retryable', () => {
   const isolated = loadContext();
   isolated.trackTicket_ = () => { throw new Error('temporary Sheet read failure'); };
@@ -171,11 +265,19 @@ test('Apps Script backend enforces machine-specific file formats', () => {
     ...baseTicket(),
     machine: 'printer',
     files: [{ name: 'cut.svg', type: 'image/svg+xml', size: 4, data: 'PHN2Zz4=' }],
-  }), /PDF or JPG/i);
+  }), /PDF.*PNG.*TIFF/i);
   assert.throws(() => context.validatePublicTicket_({
     ...baseTicket(),
     files: [{ name: 'photo.jpg', type: 'image/jpeg', size: 4, data: '/9j/2Q==' }],
   }), /SVG or DXF/i);
+  assert.doesNotThrow(() => context.validatePublicTicket_({
+    ...baseTicket(),
+    machine: 'printer',
+    files: [
+      { name: 'logo.png', type: 'image/png', size: 20, data: 'iVBORw0KGgoAAAAASUVORK5CYII=' },
+      { name: 'photo.tiff', type: 'image/tiff', size: 8, data: 'SUkqAAgAAAA=' },
+    ],
+  }));
 });
 
 test('Apps Script backend accepts private Drive receipts up to 200 MB total', () => {
@@ -284,7 +386,7 @@ test('a cold queue fill rechecks the cache under the mutation lock', () => {
   assert.equal(lock.locked, false);
 });
 
-test('Apps Script re-reads Drive bytes and validates direct PDF, JPG, SVG and DXF uploads', () => {
+test('Apps Script re-reads Drive bytes and validates direct print-image and vector uploads', () => {
   const makeContext = content => loadContext({
     ScriptApp: { getOAuthToken: () => 'oauth-token' },
     Utilities: { newBlob: bytes => blob(bytes) },
@@ -326,6 +428,22 @@ test('Apps Script re-reads Drive bytes and validates direct PDF, JPG, SVG and DX
     {},
   ));
 
+  const validPng = Buffer.from('89504e470d0a1a0a0000000049454e44ae426082', 'hex');
+  const png = makeContext(validPng);
+  assert.doesNotThrow(() => png.inspectDriveFile_(
+    { id: 'drive_file_png', name: 'logo.png' },
+    { size: String(validPng.length) },
+    {},
+  ));
+
+  const validTiff = Buffer.from('49492a0008000000', 'hex');
+  const tiff = makeContext(validTiff);
+  assert.doesNotThrow(() => tiff.inspectDriveFile_(
+    { id: 'drive_file_tiff', name: 'photo.tiff' },
+    { size: String(validTiff.length) },
+    {},
+  ));
+
   const benignSvg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g"><stop offset="0" stop-color="red"/></linearGradient></defs><rect width="24" height="24" fill="url(#g)"/></svg>');
   const svg = makeContext(benignSvg);
   assert.doesNotThrow(() => svg.inspectDriveFile_(
@@ -363,6 +481,8 @@ test('legacy file inspection matches direct-upload envelopes and rejects malform
   const isolated = loadContext({ Utilities: { newBlob: bytes => blob(bytes) } });
   assert.throws(() => isolated.inspectFile_('fake.pdf', [...Buffer.from('%PDF-EVIL\n%%EOF\n')]), /valid PDF/i);
   assert.throws(() => isolated.inspectFile_('fake.jpg', [0xff, 0xd8, 0x00, 0xff, 0xd9]), /valid JPG/i);
+  assert.throws(() => isolated.inspectFile_('cut.png', [...Buffer.from('89504e470d0a1a0a', 'hex')]), /valid PNG/i);
+  assert.throws(() => isolated.inspectFile_('fake.tif', [0x49, 0x49, 0, 0]), /valid TIFF/i);
 
   const invalidSvg = [
     '<svg xmlns="http://www.w3.org/2000/svg" width="1" width="2"/>',

@@ -25,8 +25,10 @@ test('filename allowlist rejects executables, paths, control characters and over
   for (const name of ['design.html','design.pdf.exe','../design.pdf','dir\\design.pdf','a\0.pdf','a\n.pdf','C:design.svg','x'.repeat(241)+'.pdf','']) assert.throws(() => validateFilename(name));
   assert.equal(validateFilename('Poster final.PDF'),'.pdf');
   assert.equal(validateFilename('photo.JPEG'),'.jpeg');
+  assert.equal(validateFilename('transparent.PNG'),'.png');
+  assert.equal(validateFilename('large-format.TIFF'),'.tiff');
   assert.equal(validateFilename('drawing.dxf'),'.dxf');
-  assert.throws(() => validateFilename('reference.png'));
+  assert.throws(() => validateFilename('animation.gif'));
 });
 test('static SVG validates with a content hash; MIME is not trusted', async t => {
   const content = svg('<defs><linearGradient id="g"><stop offset="0" stop-color="red"/></linearGradient></defs><rect width="24" height="24" fill="url(#g)"/>');
@@ -64,12 +66,14 @@ test('ASCII DXF accepts paired finite groups and rejects malformed or non-finite
     await assert.rejects(validateUpload(await fixture(t,'bad.dxf',content)),error => error.status===400);
   }
 });
-test('PDF/JPG envelope checks reject spoofed, empty and truncated uploads', async t => {
-  for (const [name, content] of [['empty.pdf',''],['fake.pdf','<script>alert(1)</script>'],['cut.pdf','%PDF-1.7\nmissing footer'],['image.jpg',Buffer.from('ffd8ff','hex')]]) {
+test('print-file envelope checks accept supported images and reject spoofed or truncated uploads', async t => {
+  for (const [name, content] of [['empty.pdf',''],['fake.pdf','<script>alert(1)</script>'],['cut.pdf','%PDF-1.7\nmissing footer'],['image.jpg',Buffer.from('ffd8ff','hex')],['image.png',Buffer.from('89504e470d0a1a0a','hex')],['image.tif',Buffer.from('49490000','hex')]]) {
     await assert.rejects(validateUpload(await fixture(t,name,content)),error => error.status===400);
   }
   // Envelope success deliberately does NOT mean a complete PDF parse or a malware verdict.
   assert.equal((await validateUpload(await fixture(t,'envelope.pdf','%PDF-1.7\n%%EOF\n'))).scan,'not-configured');
+  assert.equal((await validateUpload(await fixture(t,'image.png',Buffer.from('89504e470d0a1a0a0000000049454e44ae426082','hex')))).validation,'screened-v1');
+  assert.equal((await validateUpload(await fixture(t,'image.tiff',Buffer.from('49492a0008000000','hex')))).validation,'screened-v1');
 });
 test('malware screening fails closed when required, unavailable, or rejected', async t => {
   const file = await fixture(t,'safe.svg',svg('<rect width="1" height="1"/>'));

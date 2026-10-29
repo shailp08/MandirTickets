@@ -3,7 +3,8 @@
 Everything is inside this folder: the public request site, admin/staff dashboard, Google integration, and optional private-server deployment files.
 
 - `src/`: public request form, queue and tracker.
-- `server.js` and `lib/`: authentication, review workflow, material records and Textbee.
+- `server.js` and `lib/`: optional private-server authentication, review workflow, and material records.
+- `integrations/google-sheets.gs`: live Sheets/Drive backend and Telegram notification worker.
 - `staff-dashboard/`: admin/staff interface and existing prototype files.
 - `integrations/`: Google Apps Script backend.
 - `deploy/`: container configuration.
@@ -37,4 +38,4 @@ From this folder:
 docker build -f deploy/Dockerfile -t mandir-workshop .
 ```
 
-The included `.dockerignore` excludes private credentials, dependencies and data. See the setup guide for HTTPS hosting, persistent storage, account settings and Textbee requirements.
+The included `.dockerignore` excludes private credentials, dependencies and data. See the setup guide for HTTPS hosting, persistent storage, account settings, and Telegram activation.

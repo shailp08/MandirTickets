@@ -119,7 +119,7 @@ test('Google review edits details with revision protection, decline reasons and 
   assert.equal(call('adminReview',{id:'b',expectedRevision:1,input:{decision:'approve',operator:'Admin'}}).status,409);
   assert.equal(call('adminReview',{id:'b',expectedRevision:2,input:{decision:'decline',operator:'Admin'}}).status,400);
   const declined=call('adminReview',{id:'b',expectedRevision:2,input:{decision:'decline',operator:'Admin',reason:'Please send sharper artwork'}});
-  assert.equal(declined.ticket.status,'declined'); assert.equal(declined.ticket.history[1].notification.phone,'+13025550123');
+  assert.equal(declined.ticket.status,'declined'); assert.equal('notification' in declined.ticket.history[1],false);
   assert.equal(getRows()[0][19],'SECRET12'); assert.equal(getRows()[0][30],'Please send sharper artwork');
   assert.ok(!JSON.stringify(ctx.publicWorkshopQueue_()).includes('Private phone'));
 });

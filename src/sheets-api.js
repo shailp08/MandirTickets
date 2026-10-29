@@ -45,7 +45,7 @@ export function legacySheetsNotes(value, neededBy) {
 }
 
 const fileRule = machine => {
-  if (machine === 'printer') return { pattern: /\.(pdf|jpe?g)$/i, message: 'Poster printing accepts PDF or JPG files only.' };
+  if (machine === 'printer') return { pattern: /\.(pdf|png|jpe?g|tiff?)$/i, message: 'Poster printing accepts PDF, JPG, PNG, or TIFF files only.' };
   if (machine === 'foam') return { pattern: /\.(svg|dxf)$/i, message: 'Foam cutting accepts SVG or DXF files only.' };
   throw new Error('Choose a request type before adding files.');
 };

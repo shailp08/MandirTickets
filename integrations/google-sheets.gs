@@ -3,6 +3,8 @@
 // then deploy it as a web app that executes as you and is reachable by Anyone.
 
 var TICKET_SHEET = 'Tickets';
+var TELEGRAM_SUBSCRIPTIONS_SHEET = 'Telegram Subscriptions';
+var TELEGRAM_OUTBOX_SHEET = 'Telegram Outbox';
 var HEADERS = [
   'Ticket ID', 'Queue number', 'Machine', 'Name', 'Department', 'Purpose', 'Phone',
   'Quantity', 'Paper', 'Width (in)', 'Length (in)', 'Thickness (in)', 'Needed by',
@@ -11,7 +13,19 @@ var HEADERS = [
   'Approx. cost (USD)', 'Cost basis', 'Cost estimate version',
   'Material usage', 'Staff history', 'SMS consent', 'Review reason', 'Request fingerprint'
 ];
+var TELEGRAM_SUBSCRIPTION_HEADERS = [
+  'Ticket ID', 'Ticket number', 'Chat ID', 'User ID', 'State',
+  'Linked at', 'Disabled at', 'Link token hash', 'Link token expires', 'Link issued at'
+];
+var TELEGRAM_OUTBOX_HEADERS = [
+  'Event ID', 'Ticket ID', 'Ticket number', 'Audience', 'Chat ID', 'Status',
+  'Message', 'State', 'Attempts', 'Next attempt', 'Created', 'Updated',
+  'Telegram message ID', 'Detail'
+];
+var TELEGRAM_SUB = { TICKET_ID: 0, TICKET_NUMBER: 1, CHAT_ID: 2, USER_ID: 3, STATE: 4, LINKED_AT: 5, DISABLED_AT: 6, TOKEN_HASH: 7, TOKEN_EXPIRES: 8, TOKEN_ISSUED: 9 };
+var TELEGRAM_OUT = { EVENT_ID: 0, TICKET_ID: 1, TICKET_NUMBER: 2, AUDIENCE: 3, CHAT_ID: 4, STATUS: 5, MESSAGE: 6, STATE: 7, ATTEMPTS: 8, NEXT_ATTEMPT: 9, CREATED: 10, UPDATED: 11, MESSAGE_ID: 12, DETAIL: 13 };
 var STATUSES = ['pending-review', 'declined', 'queued', 'in-progress', 'ready', 'collected', 'cancelled'];
+var TELEGRAM_PUSH_STATUSES = ['ready', 'declined'];
 var MACHINES = { printer: 'Poster printing', foam: 'Foam cutting' };
 var PAPER_TYPES = ['Polypropylene', 'Adhesive', 'Canvas', 'Glossy', 'Standard'];
 var DEADLINES = ['Today', 'Tomorrow', 'This week', 'No rush'];
@@ -27,6 +41,10 @@ var PUBLIC_QUEUE_CACHE_KEY = 'PUBLIC_QUEUE_V2';
 var PUBLIC_QUEUE_CACHE_SECONDS = 60;
 var FAILED_REQUEST_PREFIX = 'FAILED_';
 var FAILED_REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
+var TELEGRAM_LINK_TTL_MS = 24 * 60 * 60 * 1000;
+var TELEGRAM_STALE_SEND_MS = 5 * 60 * 1000;
+var TELEGRAM_SEND_BATCH_SIZE = 20;
+var TELEGRAM_BOT_TOKEN = 9248388328:AAEEEPC2W6eCsQm4tnOW9f5zDIwtsQh9APw;
 var DEFAULT_UPLOAD_ORIGINS = [
   'https://shailp08.github.io',
   'http://127.0.0.1:4177',
@@ -37,6 +55,8 @@ var DEFAULT_UPLOAD_ORIGINS = [
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('Ticket system')
     .addItem('Set up backend', 'setupMandirTicketSystem')
+    .addItem('Set up Telegram notifications', 'setupTelegramNotifications')
+    .addItem('Show Telegram setup status', 'showTelegramSetupStatus')
     .addItem('Refresh sheet formatting', 'formatTicketSheet')
     .addItem('Audit ticket files', 'showTicketPipelineAudit')
     .addItem('Clean abandoned uploads', 'cleanupAbandonedUploads')
@@ -52,9 +72,63 @@ function setupMandirTicketSystem() {
     properties.setProperty('UPLOAD_FOLDER_ID', DriveApp.createFolder('Mandir Workshop Ticket Files').getId());
   }
   ensureTicketSheet_(book);
+  ensureTelegramSheets_(book);
   authorizeLargeFileUploads();
   formatTicketSheet();
   SpreadsheetApp.getUi().alert('The private ticket sheet and Drive upload folder are ready. Deploy this script as a web app next.');
+}
+
+function setupTelegramNotifications() {
+  var properties = PropertiesService.getScriptProperties();
+  var token = String(properties.getProperty('TELEGRAM_BOT_TOKEN') || '').trim();
+  if (!/^\d{6,15}:[A-Za-z0-9_-]{30,}$/.test(token)) {
+    throw new Error('Add a fresh TELEGRAM_BOT_TOKEN in Apps Script Properties first. Never store it in the Sheet or source code.');
+  }
+  var identity = telegramApiRequest_('getMe', {}, token);
+  if (!identity.ok || !identity.result || !identity.result.username) throw new Error('Telegram could not verify this bot token. Revoke it in BotFather and add the replacement token to Script Properties.');
+  var username = String(identity.result.username).replace(/^@/, '');
+  properties.setProperty('TELEGRAM_BOT_USERNAME', username);
+  ensureTelegramSheets_(openBook_());
+
+  var webhook = telegramApiRequest_('deleteWebhook', { drop_pending_updates: false }, token);
+  if (!webhook.ok) throw new Error('Telegram could not switch the bot to polling mode. Check the token and try again.');
+  var commands = telegramApiRequest_('setMyCommands', { commands: [
+    { command: 'status', description: 'Show linked ticket status' },
+    { command: 'stop', description: 'Turn off ticket notifications' },
+    { command: 'help', description: 'Show bot help' }
+  ] }, token);
+  if (!commands.ok) throw new Error('Telegram could not configure the bot commands. Check the token and try again.');
+
+  var code = randomCode_(10);
+  properties.setProperty('TELEGRAM_STAFF_REGISTRATION_CODE', code);
+  properties.setProperty('TELEGRAM_STAFF_REGISTRATION_EXPIRES', String(Date.now() + TELEGRAM_LINK_TTL_MS));
+  var hasTrigger = ScriptApp.getProjectTriggers().some(function(trigger) {
+    return trigger.getHandlerFunction() === 'processTelegramNotifications';
+  });
+  if (!hasTrigger) ScriptApp.newTrigger('processTelegramNotifications').timeBased().everyMinutes(1).create();
+
+  SpreadsheetApp.getUi().alert(
+    'Telegram polling is enabled for @' + username + '.\n\n' +
+    'Add the bot to the private staff group, then send this command in that group within 24 hours:\n\n' +
+    '/registerstaff ' + code + '\n\n' +
+    'The bot token stays in Script Properties and is never written to the Sheet.'
+  );
+  return { ok: true, username: username, staffRegistered: Boolean(properties.getProperty('TELEGRAM_STAFF_CHAT_ID')) };
+}
+
+function showTelegramSetupStatus() {
+  var properties = PropertiesService.getScriptProperties();
+  var username = telegramBotUsername_(properties);
+  var hasTrigger = ScriptApp.getProjectTriggers().some(function(trigger) {
+    return trigger.getHandlerFunction() === 'processTelegramNotifications';
+  });
+  var lines = [
+    'Bot: ' + (username ? '@' + username : 'not configured'),
+    'Polling trigger: ' + (hasTrigger ? 'installed' : 'not installed'),
+    'Private staff group: ' + (properties.getProperty('TELEGRAM_STAFF_CHAT_ID') ? 'registered' : 'not registered')
+  ];
+  SpreadsheetApp.getUi().alert(lines.join('\n'));
+  return { configured: Boolean(username && properties.getProperty('TELEGRAM_BOT_TOKEN')), trigger: hasTrigger, staffRegistered: Boolean(properties.getProperty('TELEGRAM_STAFF_CHAT_ID')) };
 }
 
 function authorizeLargeFileUploads() {
@@ -214,7 +288,8 @@ function doGet(event) {
 }
 
 function trackTicket_(params) {
-  var sheet = ensureTicketSheet_(openBook_());
+  var book = openBook_();
+  var sheet = ensureTicketSheet_(book);
   var rowNumber = 0;
   var byRequestKey = String(params.requestKey || '').toLowerCase();
   if (/^[a-f0-9]{32}$/.test(byRequestKey)) {
@@ -235,18 +310,21 @@ function trackTicket_(params) {
   var row = sheet.getRange(rowNumber, 1, 1, HEADERS.length).getValues()[0];
   var status = String(row[13] || '').toLowerCase();
   var position = activePosition_(sheet, rowNumber, String(row[2]), status);
-  return {
-    ok: true,
-    ticket: {
-      ticketNumber: String(row[1]),
-      trackingCode: String(row[19]),
-      machineName: String(row[2]),
-      status: status,
-      position: position,
-      reason: String(row[30] || ''),
-      createdAt: row[16] instanceof Date ? row[16].toISOString() : String(row[16])
-    }
+  var ticket = {
+    ticketNumber: String(row[1]),
+    trackingCode: String(row[19]),
+    machineName: String(row[2]),
+    status: status,
+    position: position,
+    reason: String(row[30] || ''),
+    createdAt: row[16] instanceof Date ? row[16].toISOString() : String(row[16])
   };
+  var telegram = telegramLinkForTicket_(book, { id: String(row[0]), ticketNumber: ticket.ticketNumber });
+  if (telegram) {
+    ticket.telegramLinked = telegram.linked;
+    if (telegram.url) ticket.telegramLink = telegram.url;
+  }
+  return { ok: true, ticket: ticket };
 }
 
 function ticketStatusValidation_() {
@@ -358,7 +436,7 @@ function neededByDate_(value) {
 function validateFiles_(files, machine) {
   if (!Array.isArray(files) || files.length > MAX_FILES) throw new Error('Attach no more than ' + MAX_FILES + ' files.');
   var format = machine === 'printer'
-    ? { pattern: /\.(pdf|jpe?g)$/i, message: 'Poster printing accepts PDF or JPG files only.' }
+    ? { pattern: /\.(pdf|png|jpe?g|tiff?)$/i, message: 'Poster printing accepts PDF, JPG, PNG, or TIFF files only.' }
     : machine === 'foam'
       ? { pattern: /\.(svg|dxf)$/i, message: 'Foam cutting accepts SVG or DXF files only.' }
       : null;
@@ -490,6 +568,18 @@ function byte_(value) {
   return value < 0 ? value + 256 : value;
 }
 
+function isPngEnvelope_(prefix, suffix) {
+  var signature = [137, 80, 78, 71, 13, 10, 26, 10];
+  var ending = [0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130];
+  return signature.every(function(value, index) { return byte_(prefix[index]) === value; })
+    && ending.every(function(value, index) { return byte_(suffix[suffix.length - ending.length + index]) === value; });
+}
+
+function isTiffHeader_(bytes) {
+  var header = [byte_(bytes[0]), byte_(bytes[1]), byte_(bytes[2]), byte_(bytes[3])].join(',');
+  return ['73,73,42,0', '77,77,0,42', '73,73,43,0', '77,77,0,43'].indexOf(header) !== -1;
+}
+
 function inspectDriveFile_(file, metadata, uploaded) {
   var lower = file.name.toLowerCase();
   var size = Number(metadata.size);
@@ -510,6 +600,8 @@ function inspectDriveFile_(file, metadata, uploaded) {
   if (/\.jpe?g$/.test(lower) && !(byte_(prefix[0]) === 255 && byte_(prefix[1]) === 216 && byte_(prefix[2]) === 255 && byte_(suffix[suffix.length - 2]) === 255 && byte_(suffix[suffix.length - 1]) === 217)) {
     throw new Error('A JPG attachment is not a valid JPG.');
   }
+  if (lower.endsWith('.png') && !isPngEnvelope_(prefix, suffix)) throw new Error('A PNG attachment is incomplete or is not a valid PNG.');
+  if (/\.tiff?$/.test(lower) && !isTiffHeader_(prefix)) throw new Error('A TIFF attachment is not a valid TIFF.');
 }
 
 function beginUpload_(params) {
@@ -670,9 +762,9 @@ function inspectFile_(name, bytes) {
     var footer = Utilities.newBlob(bytes.slice(-2048)).getDataAsString('ISO-8859-1');
     if (!/^%PDF-(1\.[0-7]|2\.0)[\r\n ]/.test(header) || !/%%EOF\s*$/.test(footer)) throw new Error('A PDF attachment is incomplete or is not a valid PDF.');
   }
-  if (lower.endsWith('.png') && !(bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71)) throw new Error('A PNG attachment is not a valid PNG.');
+  if (lower.endsWith('.png') && !isPngEnvelope_(bytes, bytes)) throw new Error('A PNG attachment is incomplete or is not a valid PNG.');
   if (/\.jpe?g$/.test(lower) && !(byte_(bytes[0]) === 255 && byte_(bytes[1]) === 216 && byte_(bytes[2]) === 255 && byte_(bytes[bytes.length - 2]) === 255 && byte_(bytes[bytes.length - 1]) === 217)) throw new Error('A JPG attachment is not a valid JPG.');
-  if (/\.tiff?$/.test(lower) && !((bytes[0] === 73 && bytes[1] === 73) || (bytes[0] === 77 && bytes[1] === 77))) throw new Error('A TIFF attachment is not a valid TIFF.');
+  if (/\.tiff?$/.test(lower) && !isTiffHeader_(bytes)) throw new Error('A TIFF attachment is not a valid TIFF.');
   if (lower.endsWith('.svg') || lower.endsWith('.dxf')) {
     var text = Utilities.newBlob(bytes).getDataAsString('UTF-8');
     if (text.indexOf('\uFFFD') !== -1) throw new Error('SVG and ASCII DXF files must use valid UTF-8 text.');
@@ -860,6 +952,28 @@ function ensureTicketSheet_(book) {
   return sheet;
 }
 
+function ensurePrivateSheet_(book, name, headers) {
+  var sheet = book.getSheetByName(name) || book.insertSheet(name);
+  var initialize = !sheet.getLastRow();
+  if (sheet.getMaxColumns() < headers.length) sheet.insertColumnsAfter(sheet.getMaxColumns(), headers.length - sheet.getMaxColumns());
+  if (initialize) sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  var current = sheet.getRange(1, 1, 1, headers.length).getDisplayValues()[0];
+  for (var i = 0; i < headers.length; i++) if (!current[i]) sheet.getRange(1, i + 1).setValue(headers[i]);
+  if (initialize) {
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#1d3a29').setFontColor('#ffffff');
+    try { if (!sheet.isSheetHidden()) sheet.hideSheet(); } catch (_error) { /* Hiding is a privacy convenience, not a setup requirement. */ }
+  }
+  return sheet;
+}
+
+function ensureTelegramSheets_(book) {
+  return {
+    subscriptions: ensurePrivateSheet_(book, TELEGRAM_SUBSCRIPTIONS_SHEET, TELEGRAM_SUBSCRIPTION_HEADERS),
+    outbox: ensurePrivateSheet_(book, TELEGRAM_OUTBOX_SHEET, TELEGRAM_OUTBOX_HEADERS)
+  };
+}
+
 function findRow_(sheet, column, value) {
   if (sheet.getLastRow() < 2) return 0;
   var match = sheet.getRange(2, column, sheet.getLastRow() - 1, 1).createTextFinder(String(value)).matchEntireCell(true).findNext();
@@ -982,10 +1096,6 @@ function normalizePhone(phone, consent) {
   if (/^1\d{10}$/.test(number)) number = '+' + number;
   if (!/^\+[1-9]\d{7,14}$/.test(number)) workshopFail_('Enter a valid mobile number with country code for text updates.');
   return number;
-}
-function notificationEvent(ticket, status, reason = '') {
-  if (!['ready', 'cancelled', 'declined'].includes(status) || !ticket.smsConsent) return {};
-  return { notification: { phone: ticket.phone, ticketNumber: ticket.ticketNumber, status, reason } };
 }
 function machineId_(value) {
   var name = String(value || '').trim().toLowerCase();
@@ -1133,12 +1243,43 @@ function publicWorkshopQueue_() {
     if (lock && lock.hasLock()) lock.releaseLock();
   }
 }
+
+function decorateTelegramTickets_(book, tickets) {
+  if (!book || typeof book.getSheetByName !== 'function') return tickets;
+  var subscriptions = book.getSheetByName(TELEGRAM_SUBSCRIPTIONS_SHEET);
+  var outbox = book.getSheetByName(TELEGRAM_OUTBOX_SHEET);
+  var linked = new Set();
+  var deliveries = new Map();
+  if (subscriptions) telegramSheetRows_(subscriptions, TELEGRAM_SUBSCRIPTION_HEADERS.length).forEach(function(row) {
+    if (row[TELEGRAM_SUB.STATE] === 'enabled') linked.add(String(row[TELEGRAM_SUB.TICKET_ID]));
+  });
+  if (outbox) telegramSheetRows_(outbox, TELEGRAM_OUTBOX_HEADERS.length).forEach(function(row) {
+    var ticketId = String(row[TELEGRAM_OUT.TICKET_ID] || '');
+    if (!ticketId) return;
+    var list = deliveries.get(ticketId) || [];
+    list.push({
+      id: String(row[TELEGRAM_OUT.EVENT_ID]),
+      audience: String(row[TELEGRAM_OUT.AUDIENCE]),
+      status: String(row[TELEGRAM_OUT.STATUS]),
+      state: String(row[TELEGRAM_OUT.STATE]),
+      updatedAt: row[TELEGRAM_OUT.UPDATED] instanceof Date ? row[TELEGRAM_OUT.UPDATED].toISOString() : String(row[TELEGRAM_OUT.UPDATED] || ''),
+      detail: String(row[TELEGRAM_OUT.DETAIL] || '')
+    });
+    deliveries.set(ticketId, list);
+  });
+  return tickets.map(function(ticket) {
+    var recent = (deliveries.get(ticket.id) || []).sort(function(a, b) { return String(b.updatedAt).localeCompare(String(a.updatedAt)); }).slice(0, 10);
+    return { ...ticket, telegram: { linked: linked.has(ticket.id), deliveries: recent } };
+  });
+}
+
 function publicStaffList_() {
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    var sheet = ensureTicketSheet_(openBook_());
-    return { ok: true, tickets: workshopRows_(sheet).map(staffTicket_) };
+    var book = openBook_();
+    var sheet = ensureTicketSheet_(book);
+    return { ok: true, tickets: decorateTelegramTickets_(book, workshopRows_(sheet).map(staffTicket_)) };
   } finally {
     if (lock.hasLock()) lock.releaseLock();
   }
@@ -1151,10 +1292,11 @@ function staffAction_(input, lock, publicAccess) {
       if (!secret || secret.length < 32 || input.secret !== secret) workshopFail_('Staff connection is not authorized.', 401);
     }
     lock.waitLock(20000);
-    var sheet = ensureTicketSheet_(openBook_());
+    var book = openBook_();
+    var sheet = ensureTicketSheet_(book);
     var rows = workshopRows_(sheet);
     var tickets = rows.map(staffTicket_);
-    if (input.action === 'staffList') return jsonResponse_({ ok: true, tickets: tickets });
+    if (input.action === 'staffList') return jsonResponse_({ ok: true, tickets: decorateTelegramTickets_(book, tickets) });
     var index = tickets.findIndex(function(t) { return t.id === input.id; });
     if (index < 0) workshopFail_('Ticket not found.', 404);
     var ticket = tickets[index];
@@ -1164,7 +1306,7 @@ function staffAction_(input, lock, publicAccess) {
       if (ticket.revision !== input.expectedRevision) workshopFail_('This request changed. Refresh before reviewing.',409);
       var result = validateReview(ticket,input.input);
       Object.assign(ticket,result.edits,{status:result.status,reason:result.reason});
-      ticket.history.push({status:ticket.status,at:now,operator:result.operator,reason:result.reason,changes:result.changes,...notificationEvent(ticket,ticket.status,result.reason)});
+      ticket.history.push({status:ticket.status,at:now,operator:result.operator,reason:result.reason,changes:result.changes});
     } else if (input.action === 'staffUsage') {
       var entry = validateUsage(ticket, input.input);
       var prior = ticket.usage.find(function(u) { return u.requestKey === entry.requestKey; });
@@ -1183,7 +1325,7 @@ function staffAction_(input, lock, publicAccess) {
       var reason = (input.reason || '').trim();
       if (reason.length > 1000 || (input.status === 'cancelled' && !reason)) workshopFail_('Give a cancellation reason (up to 1000 characters).');
       ticket.status = input.status; ticket.reason = reason;
-      ticket.history.push({ status: ticket.status, at: now, reason: ticket.reason, ...notificationEvent(ticket,ticket.status,ticket.reason) });
+      ticket.history.push({ status: ticket.status, at: now, reason: ticket.reason });
     }
     ticket.revision++; ticket.updatedAt = now;
     // One row write commits status, revision, usage and history together.
@@ -1200,7 +1342,7 @@ function staffAction_(input, lock, publicAccess) {
     sheet.getRange(index + 2, 1, 1, HEADERS.length).setValues([row.map(escapeCell_)]);
     SpreadsheetApp.flush();
     invalidatePublicQueueCache_();
-    return jsonResponse_({ ok: true, ticket: ticket });
+    return jsonResponse_({ ok: true, ticket: decorateTelegramTickets_(book, [ticket])[0] });
   } catch (error) {
     return jsonResponse_({ ok: false, status: error.status || 503, error: error.status ? error.message : 'Google Sheets could not complete this operation. Refresh and retry.' });
   }
@@ -1224,4 +1366,464 @@ function holdUnreviewedQueueForAdminReview() {
     SpreadsheetApp.flush();
     invalidatePublicQueueCache_();
   } finally { lock.releaseLock(); }
+}
+
+function telegramBotUsername_(properties) {
+  var username = String(properties.getProperty('TELEGRAM_BOT_USERNAME') || '').trim().replace(/^@/, '');
+  return /^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(username) ? username : '';
+}
+
+function telegramText_(value) {
+  return String(value == null ? '' : value).replace(/^'(?=-?\d+$)/, '');
+}
+
+function telegramDateMs_(value) {
+  if (value instanceof Date) return value.getTime();
+  var parsed = Date.parse(String(value || ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sha256Hex_(value) {
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(value)).map(function(byte) {
+    return (byte < 0 ? byte + 256 : byte).toString(16).padStart(2, '0');
+  }).join('');
+}
+
+function telegramLinkForTicket_(book, ticket) {
+  var properties = PropertiesService.getScriptProperties();
+  var username = telegramBotUsername_(properties);
+  var tokenConfigured = /^\d{6,15}:[A-Za-z0-9_-]{30,}$/.test(String(properties.getProperty('TELEGRAM_BOT_TOKEN') || '').trim());
+  if (!username || !tokenConfigured || !ticket || !ticket.id || !ticket.ticketNumber) return null;
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var subscriptions = ensureTelegramSheets_(book).subscriptions;
+    var rowNumber = findRow_(subscriptions, TELEGRAM_SUB.TICKET_ID + 1, ticket.id);
+    var existing = rowNumber ? subscriptions.getRange(rowNumber, 1, 1, TELEGRAM_SUBSCRIPTION_HEADERS.length).getValues()[0] : null;
+    if (existing && String(existing[TELEGRAM_SUB.STATE]) === 'enabled' && telegramText_(existing[TELEGRAM_SUB.CHAT_ID])) return { linked: true };
+
+    var token = String(Utilities.getUuid()).replace(/-/g, '');
+    var now = new Date();
+    var row = existing || Array(TELEGRAM_SUBSCRIPTION_HEADERS.length).fill('');
+    row[TELEGRAM_SUB.TICKET_ID] = ticket.id;
+    row[TELEGRAM_SUB.TICKET_NUMBER] = ticket.ticketNumber;
+    row[TELEGRAM_SUB.CHAT_ID] = '';
+    row[TELEGRAM_SUB.USER_ID] = '';
+    row[TELEGRAM_SUB.STATE] = 'pending';
+    row[TELEGRAM_SUB.LINKED_AT] = '';
+    row[TELEGRAM_SUB.DISABLED_AT] = '';
+    row[TELEGRAM_SUB.TOKEN_HASH] = sha256Hex_(token);
+    row[TELEGRAM_SUB.TOKEN_EXPIRES] = new Date(now.getTime() + TELEGRAM_LINK_TTL_MS);
+    row[TELEGRAM_SUB.TOKEN_ISSUED] = now;
+    var target = rowNumber || subscriptions.getLastRow() + 1;
+    subscriptions.getRange(target, 1, 1, row.length).setValues([row.map(escapeCell_)]);
+    SpreadsheetApp.flush();
+    return { linked: false, url: 'https://t.me/' + username + '?start=' + token };
+  } finally {
+    if (lock.hasLock()) lock.releaseLock();
+  }
+}
+
+function parseTelegramCommand_(text) {
+  var match = /^\/([A-Za-z]+)(?:@[A-Za-z0-9_]+)?(?:\s+([^\r\n]{1,100}))?\s*$/.exec(String(text || '').trim());
+  return match ? { command: match[1].toLowerCase(), argument: String(match[2] || '').trim() } : null;
+}
+
+function telegramStatusLabel_(status) {
+  return ({
+    'pending-review': 'Awaiting review',
+    declined: 'Declined',
+    queued: 'Waiting in the queue',
+    'in-progress': 'In progress',
+    ready: 'Ready for pickup',
+    collected: 'Collected',
+    cancelled: 'Cancelled'
+  })[String(status || '').toLowerCase()] || 'Unknown';
+}
+
+function telegramPushMessage_(ticketNumber, status) {
+  if (status === 'ready') return ticketNumber + ' is ready for pickup.';
+  if (status === 'declined') return ticketNumber + ' was declined.';
+  return '';
+}
+
+function telegramApiRequest_(method, payload, token) {
+  var response;
+  try {
+    response = UrlFetchApp.fetch('https://api.telegram.org/bot' + token + '/' + method, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload || {}),
+      muteHttpExceptions: true
+    });
+  } catch (_error) {
+    // UrlFetch errors may contain the request URL. Never let a token-bearing URL
+    // reach Apps Script execution logs or the notification journal.
+    throw new Error('Telegram could not be reached. Try again shortly.');
+  }
+  var body;
+  try { body = JSON.parse(response.getContentText() || '{}'); } catch (_error) { body = {}; }
+  return {
+    ok: response.getResponseCode() >= 200 && response.getResponseCode() < 300 && body.ok === true,
+    httpCode: response.getResponseCode(),
+    result: body.result,
+    description: String(body.description || ''),
+    parameters: body.parameters || {}
+  };
+}
+
+function telegramSheetRows_(sheet, width) {
+  return sheet.getLastRow() < 2 ? [] : sheet.getRange(2, 1, sheet.getLastRow() - 1, width).getValues();
+}
+
+function appendTelegramOutbox_(outbox, record, existingIds) {
+  if (!record.eventId || (existingIds && existingIds.has(record.eventId)) || findRow_(outbox, TELEGRAM_OUT.EVENT_ID + 1, record.eventId)) return false;
+  var now = new Date();
+  var row = Array(TELEGRAM_OUTBOX_HEADERS.length).fill('');
+  row[TELEGRAM_OUT.EVENT_ID] = record.eventId;
+  row[TELEGRAM_OUT.TICKET_ID] = record.ticketId || '';
+  row[TELEGRAM_OUT.TICKET_NUMBER] = record.ticketNumber || '';
+  row[TELEGRAM_OUT.AUDIENCE] = record.audience || 'requester';
+  row[TELEGRAM_OUT.CHAT_ID] = record.chatId;
+  row[TELEGRAM_OUT.STATUS] = record.status || 'command';
+  row[TELEGRAM_OUT.MESSAGE] = record.message;
+  row[TELEGRAM_OUT.STATE] = 'pending';
+  row[TELEGRAM_OUT.ATTEMPTS] = 0;
+  row[TELEGRAM_OUT.NEXT_ATTEMPT] = now;
+  row[TELEGRAM_OUT.CREATED] = now;
+  row[TELEGRAM_OUT.UPDATED] = now;
+  outbox.getRange(outbox.getLastRow() + 1, 1, 1, row.length).setValues([row.map(escapeCell_)]);
+  if (existingIds) existingIds.add(record.eventId);
+  return true;
+}
+
+function telegramCommandReply_(outbox, updateId, chatId, message, audience, suffix) {
+  return appendTelegramOutbox_(outbox, {
+    eventId: 'command-' + updateId + '-' + (suffix || 'reply'),
+    audience: audience || 'requester',
+    chatId: chatId,
+    status: 'command',
+    message: message
+  });
+}
+
+function telegramTicketMap_(book) {
+  var tickets = workshopRows_(ensureTicketSheet_(book)).map(staffTicket_);
+  var byId = new Map();
+  var byNumber = new Map();
+  tickets.forEach(function(ticket) { byId.set(ticket.id, ticket); byNumber.set(ticket.ticketNumber, ticket); });
+  return { tickets: tickets, byId: byId, byNumber: byNumber };
+}
+
+function disableTelegramChat_(subscriptions, outbox, chatId) {
+  var normalized = String(chatId);
+  var now = new Date();
+  var disabled = 0;
+  telegramSheetRows_(subscriptions, TELEGRAM_SUBSCRIPTION_HEADERS.length).forEach(function(row, index) {
+    if (String(row[TELEGRAM_SUB.STATE]) !== 'enabled' || telegramText_(row[TELEGRAM_SUB.CHAT_ID]) !== normalized) return;
+    row[TELEGRAM_SUB.STATE] = 'disabled';
+    row[TELEGRAM_SUB.DISABLED_AT] = now;
+    row[TELEGRAM_SUB.CHAT_ID] = '';
+    row[TELEGRAM_SUB.USER_ID] = '';
+    subscriptions.getRange(index + 2, 1, 1, row.length).setValues([row.map(escapeCell_)]);
+    disabled++;
+  });
+  telegramSheetRows_(outbox, TELEGRAM_OUTBOX_HEADERS.length).forEach(function(row, index) {
+    if (row[TELEGRAM_OUT.AUDIENCE] !== 'requester' || telegramText_(row[TELEGRAM_OUT.CHAT_ID]) !== normalized || row[TELEGRAM_OUT.STATE] !== 'pending') return;
+    row[TELEGRAM_OUT.STATE] = 'superseded';
+    row[TELEGRAM_OUT.UPDATED] = now;
+    row[TELEGRAM_OUT.DETAIL] = 'The requester turned off Telegram updates before this message was sent.';
+    outbox.getRange(index + 2, 1, 1, row.length).setValues([row.map(escapeCell_)]);
+  });
+  return disabled;
+}
+
+function handleTelegramUpdate_(update, book, subscriptions, outbox, properties) {
+  var message = update && update.message;
+  if (!message || !message.chat || typeof message.text !== 'string') return;
+  var parsed = parseTelegramCommand_(message.text);
+  if (!parsed) return;
+  var chatId = String(message.chat.id);
+  var chatType = String(message.chat.type || '');
+  var updateId = String(update.update_id);
+  var ticketMap = telegramTicketMap_(book);
+
+  if (parsed.command === 'registerstaff') {
+    if (chatType !== 'group' && chatType !== 'supergroup') {
+      telegramCommandReply_(outbox, updateId, chatId, 'Staff registration must be sent inside the private staff group.', 'staff', 'register');
+      return;
+    }
+    var expected = String(properties.getProperty('TELEGRAM_STAFF_REGISTRATION_CODE') || '');
+    var expires = Number(properties.getProperty('TELEGRAM_STAFF_REGISTRATION_EXPIRES') || 0);
+    if (!expected || parsed.argument !== expected || Date.now() > expires) {
+      telegramCommandReply_(outbox, updateId, chatId, 'That staff registration code is invalid or expired. Run Telegram setup from the ticket Sheet again.', 'staff', 'register');
+      return;
+    }
+    properties.setProperty('TELEGRAM_STAFF_CHAT_ID', chatId);
+    properties.setProperty('TELEGRAM_STAFF_REGISTERED_AT', new Date().toISOString());
+    properties.deleteProperty('TELEGRAM_STAFF_REGISTRATION_CODE');
+    properties.deleteProperty('TELEGRAM_STAFF_REGISTRATION_EXPIRES');
+    telegramCommandReply_(outbox, updateId, chatId, 'Private staff group registered. Ready and declined ticket updates will appear here.', 'staff', 'register');
+    return;
+  }
+
+  if (parsed.command === 'start') {
+    if (chatType !== 'private') return;
+    if (!/^[A-Za-z0-9_-]{16,64}$/.test(parsed.argument)) {
+      telegramCommandReply_(outbox, updateId, chatId, 'Open the Telegram update link from your ticket receipt to link a ticket.', 'requester', 'start');
+      return;
+    }
+    var tokenHash = sha256Hex_(parsed.argument);
+    var subscriptionRow = findRow_(subscriptions, TELEGRAM_SUB.TOKEN_HASH + 1, tokenHash);
+    if (!subscriptionRow) {
+      telegramCommandReply_(outbox, updateId, chatId, 'This ticket link is invalid, expired, or has already been used.', 'requester', 'start');
+      return;
+    }
+    var subscription = subscriptions.getRange(subscriptionRow, 1, 1, TELEGRAM_SUBSCRIPTION_HEADERS.length).getValues()[0];
+    if (telegramDateMs_(subscription[TELEGRAM_SUB.TOKEN_EXPIRES]) < Date.now()) {
+      subscription[TELEGRAM_SUB.STATE] = 'expired';
+      subscription[TELEGRAM_SUB.TOKEN_HASH] = '';
+      subscription[TELEGRAM_SUB.TOKEN_EXPIRES] = '';
+      subscriptions.getRange(subscriptionRow, 1, 1, subscription.length).setValues([subscription.map(escapeCell_)]);
+      telegramCommandReply_(outbox, updateId, chatId, 'This ticket link has expired. Generate a new Telegram link from the ticket tracker.', 'requester', 'start');
+      return;
+    }
+    var ticket = ticketMap.byId.get(String(subscription[TELEGRAM_SUB.TICKET_ID]));
+    if (!ticket) {
+      telegramCommandReply_(outbox, updateId, chatId, 'This ticket could not be found.', 'requester', 'start');
+      return;
+    }
+    subscription[TELEGRAM_SUB.CHAT_ID] = chatId;
+    subscription[TELEGRAM_SUB.USER_ID] = message.from && message.from.id != null ? String(message.from.id) : '';
+    subscription[TELEGRAM_SUB.STATE] = 'enabled';
+    subscription[TELEGRAM_SUB.LINKED_AT] = new Date();
+    subscription[TELEGRAM_SUB.DISABLED_AT] = '';
+    subscription[TELEGRAM_SUB.TOKEN_HASH] = '';
+    subscription[TELEGRAM_SUB.TOKEN_EXPIRES] = '';
+    subscriptions.getRange(subscriptionRow, 1, 1, subscription.length).setValues([subscription.map(escapeCell_)]);
+    telegramCommandReply_(outbox, updateId, chatId,
+      'Telegram updates are enabled for ' + ticket.ticketNumber + '.\nCurrent status: ' + telegramStatusLabel_(ticket.status) + '.\nUse /status anytime or /stop to turn off updates.',
+      'requester', 'start');
+    return;
+  }
+
+  if (parsed.command === 'status') {
+    var staffChat = String(properties.getProperty('TELEGRAM_STAFF_CHAT_ID') || '');
+    if ((chatType === 'group' || chatType === 'supergroup') && chatId === staffChat) {
+      var number = parsed.argument.toUpperCase();
+      if (!/^[PF]-\d{4,8}$/.test(number)) {
+        telegramCommandReply_(outbox, updateId, chatId, 'Use /status followed by a ticket number, for example /status P-0001.', 'staff', 'status');
+        return;
+      }
+      var staffTicket = ticketMap.byNumber.get(number);
+      telegramCommandReply_(outbox, updateId, chatId, staffTicket ? staffTicket.ticketNumber + ' — ' + telegramStatusLabel_(staffTicket.status) : 'Ticket not found.', 'staff', 'status');
+      return;
+    }
+    if (chatType !== 'private') return;
+    var linkedIds = telegramSheetRows_(subscriptions, TELEGRAM_SUBSCRIPTION_HEADERS.length).filter(function(row) {
+      return row[TELEGRAM_SUB.STATE] === 'enabled' && telegramText_(row[TELEGRAM_SUB.CHAT_ID]) === chatId;
+    }).map(function(row) { return String(row[TELEGRAM_SUB.TICKET_ID]); });
+    var lines = linkedIds.map(function(id) { return ticketMap.byId.get(id); }).filter(Boolean).map(function(ticket) {
+      return ticket.ticketNumber + ' — ' + telegramStatusLabel_(ticket.status);
+    });
+    telegramCommandReply_(outbox, updateId, chatId, lines.length ? 'Your ticket status:\n' + lines.join('\n') : 'No tickets are linked to this Telegram chat. Open the Telegram update link from a ticket receipt.', 'requester', 'status');
+    return;
+  }
+
+  if (parsed.command === 'stop' && chatType === 'private') {
+    var count = disableTelegramChat_(subscriptions, outbox, chatId);
+    telegramCommandReply_(outbox, updateId, chatId, count ? 'Telegram ticket updates are now turned off.' : 'No active ticket updates were linked to this chat.', 'requester', 'stop');
+    return;
+  }
+
+  if (parsed.command === 'help' || (parsed.command === 'start' && !parsed.argument)) {
+    var help = chatType === 'private'
+      ? 'Use /status to check linked tickets or /stop to turn off updates. Link a ticket from the Telegram button on its receipt.'
+      : 'Staff can use /status P-0001 to check a ticket. Ready and declined updates are posted automatically after this group is registered.';
+    telegramCommandReply_(outbox, updateId, chatId, help, chatType === 'private' ? 'requester' : 'staff', 'help');
+  }
+}
+
+function reconcileTelegramEvents_(book, subscriptions, outbox, properties) {
+  var map = telegramTicketMap_(book);
+  var existingIds = new Set(telegramSheetRows_(outbox, TELEGRAM_OUTBOX_HEADERS.length).map(function(row) { return String(row[TELEGRAM_OUT.EVENT_ID]); }));
+  var enabledByTicket = new Map();
+  telegramSheetRows_(subscriptions, TELEGRAM_SUBSCRIPTION_HEADERS.length).forEach(function(row) {
+    if (row[TELEGRAM_SUB.STATE] === 'enabled' && telegramText_(row[TELEGRAM_SUB.CHAT_ID])) enabledByTicket.set(String(row[TELEGRAM_SUB.TICKET_ID]), row);
+  });
+  var staffChat = String(properties.getProperty('TELEGRAM_STAFF_CHAT_ID') || '');
+  var staffLinkedAt = Date.parse(String(properties.getProperty('TELEGRAM_STAFF_REGISTERED_AT') || '')) || 0;
+  var created = 0;
+  map.tickets.forEach(function(ticket) {
+    (ticket.history || []).forEach(function(entry) {
+      var status = String(entry.status || '');
+      if (TELEGRAM_PUSH_STATUSES.indexOf(status) === -1 || !entry.at) return;
+      if (status === 'ready' && ticket.status !== 'ready') return;
+      var eventAt = Date.parse(entry.at) || 0;
+      var message = telegramPushMessage_(ticket.ticketNumber, status);
+      var subscription = enabledByTicket.get(ticket.id);
+      if (subscription && eventAt >= telegramDateMs_(subscription[TELEGRAM_SUB.LINKED_AT])) {
+        var requesterChat = telegramText_(subscription[TELEGRAM_SUB.CHAT_ID]);
+        created += appendTelegramOutbox_(outbox, {
+          eventId: sha256Hex_([ticket.id, entry.at, status, 'requester', requesterChat].join('|')),
+          ticketId: ticket.id,
+          ticketNumber: ticket.ticketNumber,
+          audience: 'requester',
+          chatId: requesterChat,
+          status: status,
+          message: message
+        }, existingIds) ? 1 : 0;
+      }
+      if (staffChat && eventAt >= staffLinkedAt) {
+        created += appendTelegramOutbox_(outbox, {
+          eventId: sha256Hex_([ticket.id, entry.at, status, 'staff', staffChat].join('|')),
+          ticketId: ticket.id,
+          ticketNumber: ticket.ticketNumber,
+          audience: 'staff',
+          chatId: staffChat,
+          status: status,
+          message: message
+        }, existingIds) ? 1 : 0;
+      }
+    });
+  });
+  return created;
+}
+
+function claimTelegramOutbox_(book, outbox) {
+  var now = Date.now();
+  var ticketMap = telegramTicketMap_(book).byId;
+  var claimed = [];
+  telegramSheetRows_(outbox, TELEGRAM_OUTBOX_HEADERS.length).forEach(function(row, index) {
+    var state = String(row[TELEGRAM_OUT.STATE] || '');
+    var updated = telegramDateMs_(row[TELEGRAM_OUT.UPDATED]);
+    if (state === 'sending' && updated && now - updated > TELEGRAM_STALE_SEND_MS) {
+      row[TELEGRAM_OUT.STATE] = 'unknown';
+      row[TELEGRAM_OUT.UPDATED] = new Date(now);
+      row[TELEGRAM_OUT.DETAIL] = 'The Apps Script run ended during the send. Check Telegram before retrying to avoid a duplicate.';
+      outbox.getRange(index + 2, 1, 1, row.length).setValues([row.map(escapeCell_)]);
+      return;
+    }
+    if (state !== 'pending' || telegramDateMs_(row[TELEGRAM_OUT.NEXT_ATTEMPT]) > now || claimed.length >= TELEGRAM_SEND_BATCH_SIZE) return;
+    var ticket = ticketMap.get(String(row[TELEGRAM_OUT.TICKET_ID] || ''));
+    if (row[TELEGRAM_OUT.STATUS] === 'ready' && ticket && ticket.status !== 'ready') {
+      row[TELEGRAM_OUT.STATE] = 'superseded';
+      row[TELEGRAM_OUT.UPDATED] = new Date(now);
+      row[TELEGRAM_OUT.DETAIL] = 'The ticket moved on before the ready message was sent.';
+      outbox.getRange(index + 2, 1, 1, row.length).setValues([row.map(escapeCell_)]);
+      return;
+    }
+    var attempts = Number(row[TELEGRAM_OUT.ATTEMPTS] || 0) + 1;
+    if (attempts > 5) {
+      row[TELEGRAM_OUT.STATE] = 'failed';
+      row[TELEGRAM_OUT.UPDATED] = new Date(now);
+      row[TELEGRAM_OUT.DETAIL] = 'Telegram rejected this message repeatedly.';
+      outbox.getRange(index + 2, 1, 1, row.length).setValues([row.map(escapeCell_)]);
+      return;
+    }
+    row[TELEGRAM_OUT.STATE] = 'sending';
+    row[TELEGRAM_OUT.ATTEMPTS] = attempts;
+    row[TELEGRAM_OUT.UPDATED] = new Date(now);
+    row[TELEGRAM_OUT.DETAIL] = '';
+    outbox.getRange(index + 2, 1, 1, row.length).setValues([row.map(escapeCell_)]);
+    claimed.push({
+      rowNumber: index + 2,
+      eventId: String(row[TELEGRAM_OUT.EVENT_ID]),
+      audience: String(row[TELEGRAM_OUT.AUDIENCE]),
+      chatId: telegramText_(row[TELEGRAM_OUT.CHAT_ID]),
+      message: String(row[TELEGRAM_OUT.MESSAGE]),
+      attempts: attempts
+    });
+  });
+  return claimed;
+}
+
+function telegramDeliveryOutcome_(response, attempts, now) {
+  if (response && response.ok && response.result && response.result.message_id != null) {
+    return { state: 'sent', messageId: String(response.result.message_id), nextAttempt: '', detail: 'Accepted by Telegram.' };
+  }
+  var code = Number(response && response.httpCode || 0);
+  if (code === 429 && attempts < 5) {
+    var retryAfter = Math.max(1, Math.min(3600, Number(response.parameters && response.parameters.retry_after || 30)));
+    return { state: 'pending', messageId: '', nextAttempt: new Date(now + retryAfter * 1000), detail: 'Telegram rate limit reached; retry scheduled.' };
+  }
+  if (code >= 500 && attempts < 5) {
+    return { state: 'pending', messageId: '', nextAttempt: new Date(now + Math.min(60, Math.pow(2, attempts)) * 1000), detail: 'Telegram is temporarily unavailable; retry scheduled.' };
+  }
+  var description = String(response && response.description || '').replace(/\s+/g, ' ').trim();
+  return { state: 'failed', messageId: '', nextAttempt: '', detail: description ? 'Telegram rejected the message: ' + description.slice(0, 220) : 'Telegram rejected the message.' };
+}
+
+function updateTelegramDelivery_(attempt, outcome, responseCode) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var book = openBook_();
+    var sheets = ensureTelegramSheets_(book);
+    var rowNumber = attempt.rowNumber;
+    var row = sheets.outbox.getRange(rowNumber, 1, 1, TELEGRAM_OUTBOX_HEADERS.length).getValues()[0];
+    if (String(row[TELEGRAM_OUT.EVENT_ID]) !== attempt.eventId) {
+      rowNumber = findRow_(sheets.outbox, TELEGRAM_OUT.EVENT_ID + 1, attempt.eventId);
+      if (!rowNumber) return;
+      row = sheets.outbox.getRange(rowNumber, 1, 1, TELEGRAM_OUTBOX_HEADERS.length).getValues()[0];
+    }
+    row[TELEGRAM_OUT.STATE] = outcome.state;
+    row[TELEGRAM_OUT.NEXT_ATTEMPT] = outcome.nextAttempt;
+    row[TELEGRAM_OUT.UPDATED] = new Date();
+    row[TELEGRAM_OUT.MESSAGE_ID] = outcome.messageId;
+    row[TELEGRAM_OUT.DETAIL] = outcome.detail;
+    sheets.outbox.getRange(rowNumber, 1, 1, row.length).setValues([row.map(escapeCell_)]);
+    if (responseCode === 403 && attempt.audience === 'requester') disableTelegramChat_(sheets.subscriptions, sheets.outbox, attempt.chatId);
+    SpreadsheetApp.flush();
+  } finally {
+    if (lock.hasLock()) lock.releaseLock();
+  }
+}
+
+function processTelegramNotifications() {
+  var properties = PropertiesService.getScriptProperties();
+  var token = String(properties.getProperty('TELEGRAM_BOT_TOKEN') || '').trim();
+  if (!/^\d{6,15}:[A-Za-z0-9_-]{30,}$/.test(token)) return { configured: false, updates: 0, queued: 0, sent: 0 };
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(1000)) return { configured: true, busy: true, updates: 0, queued: 0, sent: 0 };
+  var claimed = [];
+  var updateCount = 0;
+  var queued = 0;
+  try {
+    var offset = Number(properties.getProperty('TELEGRAM_UPDATE_OFFSET') || 0);
+    var response = telegramApiRequest_('getUpdates', { offset: offset, limit: 100, timeout: 0, allowed_updates: ['message'] }, token);
+    if (!response.ok || !Array.isArray(response.result)) throw new Error('Telegram update polling failed. Check the bot token and setup status.');
+    var book = openBook_();
+    var sheets = ensureTelegramSheets_(book);
+    var nextOffset = offset;
+    response.result.forEach(function(update) {
+      try { handleTelegramUpdate_(update, book, sheets.subscriptions, sheets.outbox, properties); }
+      catch (error) { console.error('Telegram update ' + String(update.update_id) + ' failed: ' + safeError_(error)); }
+      if (Number.isSafeInteger(update.update_id)) nextOffset = Math.max(nextOffset, update.update_id + 1);
+      updateCount++;
+    });
+    queued = reconcileTelegramEvents_(book, sheets.subscriptions, sheets.outbox, properties);
+    claimed = claimTelegramOutbox_(book, sheets.outbox);
+    SpreadsheetApp.flush();
+    properties.setProperty('TELEGRAM_UPDATE_OFFSET', String(nextOffset));
+  } finally {
+    if (lock.hasLock()) lock.releaseLock();
+  }
+
+  var sent = 0;
+  claimed.forEach(function(attempt) {
+    var outcome;
+    var responseCode = 0;
+    try {
+      var result = telegramApiRequest_('sendMessage', { chat_id: attempt.chatId, text: attempt.message, disable_web_page_preview: true }, token);
+      responseCode = result.httpCode;
+      outcome = telegramDeliveryOutcome_(result, attempt.attempts, Date.now());
+    } catch (_error) {
+      outcome = { state: 'unknown', messageId: '', nextAttempt: '', detail: 'The connection ended during the send. Check Telegram before retrying to avoid a duplicate.' };
+    }
+    if (outcome.state === 'sent') sent++;
+    updateTelegramDelivery_(attempt, outcome, responseCode);
+  });
+  return { configured: true, updates: updateCount, queued: queued, sent: sent };
 }
