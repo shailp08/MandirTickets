@@ -58,6 +58,7 @@ export function validateFileTypes(files, machine) {
 }
 
 export function validateFileSelection(files, machine) {
+  if (!files.length) throw new Error('Attach at least one artwork file to submit a ticket.');
   validateFileTypes(files, machine);
   let total = 0;
   for (const file of files) {

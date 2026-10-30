@@ -44,6 +44,7 @@ var FAILED_REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
 var TELEGRAM_LINK_TTL_MS = 24 * 60 * 60 * 1000;
 var TELEGRAM_STALE_SEND_MS = 5 * 60 * 1000;
 var TELEGRAM_SEND_BATCH_SIZE = 20;
+var TELEGRAM_STAFF_MESSAGE_CHUNK = 3700;
 var DEFAULT_UPLOAD_ORIGINS = [
   'https://shailp08.github.io',
   'http://127.0.0.1:4177',
@@ -300,7 +301,11 @@ function doPost(event) {
     incrementDailyCount_(properties);
     properties.deleteProperty(uploadReservationKey_(request.requestKey));
     properties.deleteProperty(requestFailureKey_(request.requestKey));
-    return jsonResponse_({ ok: true });
+    var createResponse = jsonResponse_({ ok: true });
+    if (lock.hasLock()) lock.releaseLock();
+    try { processTelegramTicketNotifications_(String(row[0])); }
+    catch (telegramError) { console.error('Immediate Telegram delivery failed: ' + safeError_(telegramError)); }
+    return createResponse;
   } catch (error) {
     console.error(error && error.stack ? error.stack : error);
     if (!rowCommitted) rollbackSavedFiles_(fileChanges);
@@ -430,9 +435,8 @@ function validatePublicTicket_(input) {
     thickness: '',
     files: validateFiles_(input.files || [], machine)
   };
-  if (machine === 'printer') {
-    if (!request.files.length) throw new Error('Add at least one print-ready file.');
-  } else {
+  if (!request.files.length) throw new Error('Attach at least one artwork file to submit a ticket.');
+  if (machine === 'foam') {
     request.thickness = positiveNumber_(input.thickness, 'Foam thickness', 1000, false);
   }
   request.phone = normalizePhone(request.phone, request.smsConsent);
@@ -1484,10 +1488,116 @@ function telegramStatusLabel_(status) {
   })[String(status || '').toLowerCase()] || 'Unknown';
 }
 
-function telegramPushMessage_(ticketNumber, status) {
+function telegramPushMessage_(ticketNumber, status, declineReason) {
   if (status === 'ready') return ticketNumber + ' is ready for pickup.';
-  if (status === 'declined') return ticketNumber + ' was declined.';
+  if (status === 'declined') {
+    var reason = String(declineReason || '').trim();
+    return ticketNumber + ' was declined.' + (reason ? '\nReason: ' + reason : '');
+  }
   return '';
+}
+
+function telegramStaffValue_(value, fallback) {
+  var text = String(value == null ? '' : value)
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
+    .trim();
+  return text || fallback || 'Not provided';
+}
+
+function telegramStaffNumber_(value) {
+  var number = Number(value);
+  return Number.isFinite(number) && number > 0 ? String(number) : '';
+}
+
+function telegramStaffSize_(ticket) {
+  var width = telegramStaffNumber_(ticket && ticket.width);
+  var length = telegramStaffNumber_(ticket && ticket.length);
+  if (width && length) return width + ' × ' + length + ' in';
+  if (width) return width + ' in wide (length not provided)';
+  if (length) return length + ' in long (width not provided)';
+  return 'Not provided';
+}
+
+function telegramStaffSubmittedAt_(value) {
+  var date = new Date(value);
+  if (Number.isFinite(date.getTime())) {
+    try {
+      if (typeof Utilities !== 'undefined' && typeof Session !== 'undefined') {
+        return Utilities.formatDate(date, Session.getScriptTimeZone(), 'MMM d, yyyy · h:mm a z');
+      }
+    } catch (_error) { /* Fall back to an unambiguous UTC timestamp. */ }
+    return date.toISOString().replace('T', ' ').replace(/:\d{2}\.\d{3}Z$/, ' UTC');
+  }
+  return telegramStaffValue_(value, 'Unknown');
+}
+
+function telegramStaffNewTicketMessage_(ticket) {
+  ticket = ticket || {};
+  var machine = String(ticket.machine || '');
+  var lines = [
+    '🆕 NEW WORKSHOP TICKET',
+    telegramStaffValue_(ticket.ticketNumber, 'Ticket number pending') + ' · Awaiting review',
+    'Submitted: ' + telegramStaffSubmittedAt_(ticket.createdAt),
+    '',
+    '👤 REQUESTER',
+    'Name: ' + telegramStaffValue_(ticket.customerName),
+    'Department: ' + telegramStaffValue_(ticket.department),
+    'Phone: ' + telegramStaffValue_(ticket.phone),
+    '',
+    '📋 REQUEST',
+    'Service: ' + (MACHINES[machine] || telegramStaffValue_(ticket.machineName, 'Workshop request')),
+    'Purpose:',
+    telegramStaffValue_(ticket.purpose),
+    '',
+    '⚙️ JOB DETAILS',
+    'Quantity: ' + telegramStaffValue_(telegramStaffNumber_(ticket.quantity)),
+    'Finished size: ' + telegramStaffSize_(ticket)
+  ];
+  if (machine === 'foam') lines.push('Foam thickness: ' + (telegramStaffNumber_(ticket.thickness) ? telegramStaffNumber_(ticket.thickness) + ' in' : 'Not provided'));
+  if (telegramStaffValue_(ticket.paperType, '') !== 'Not provided') lines.push('Paper: ' + telegramStaffValue_(ticket.paperType));
+  lines.push('Needed by: ' + telegramStaffValue_(ticket.neededBy, 'No rush'));
+  lines.push('');
+  lines.push('📝 ADDITIONAL NOTES');
+  lines.push(telegramStaffValue_(ticket.notes, 'None provided'));
+  lines.push('');
+  var files = Array.isArray(ticket.files) ? ticket.files : [];
+  lines.push('📎 FILES (' + files.length + ')');
+  if (!files.length) {
+    lines.push('None attached.');
+    return lines.join('\n');
+  }
+  files.slice(0, MAX_FILES).forEach(function(file, index) {
+    var name = telegramStaffValue_(file && file.originalName, 'Artwork ' + (index + 1)).replace(/\n+/g, ' ');
+    var url = String(file && file.url || '').trim();
+    lines.push((index + 1) + '. ' + name);
+    lines.push(/^https:\/\/drive\.google\.com\/file\/d\/[A-Za-z0-9_-]+\/view$/.test(url) ? '   ' + url : '   File link unavailable');
+  });
+  return lines.join('\n');
+}
+
+function telegramMessageChunks_(message, maxLength) {
+  var remaining = String(message || '');
+  var limit = Number.isSafeInteger(maxLength) && maxLength > 100 ? maxLength : TELEGRAM_STAFF_MESSAGE_CHUNK;
+  var chunks = [];
+  while (remaining.length > limit) {
+    var splitAt = remaining.lastIndexOf('\n', limit);
+    if (splitAt < Math.floor(limit / 2)) splitAt = limit;
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt);
+    if (remaining.charAt(0) === '\n') remaining = remaining.slice(1);
+  }
+  if (remaining || !chunks.length) chunks.push(remaining);
+  return chunks;
+}
+
+function telegramStaffNewTicketMessages_(ticket) {
+  var chunks = telegramMessageChunks_(telegramStaffNewTicketMessage_(ticket), TELEGRAM_STAFF_MESSAGE_CHUNK);
+  if (chunks.length === 1) return chunks;
+  return chunks.map(function(chunk, index) {
+    if (index === 0) return chunk + '\n\nPart 1 of ' + chunks.length;
+    return '↳ ' + telegramStaffValue_(ticket && ticket.ticketNumber, 'Ticket') + ' continued · Part ' + (index + 1) + ' of ' + chunks.length + '\n\n' + chunk;
+  });
 }
 
 function telegramApiRequest_(method, payload, token) {
@@ -1606,7 +1716,7 @@ function handleTelegramUpdate_(update, book, subscriptions, outbox, properties) 
     properties.setProperty('TELEGRAM_STAFF_REGISTERED_AT', new Date().toISOString());
     properties.deleteProperty('TELEGRAM_STAFF_REGISTRATION_CODE');
     properties.deleteProperty('TELEGRAM_STAFF_REGISTRATION_EXPIRES');
-    telegramCommandReply_(outbox, updateId, chatId, 'Private staff group registered. Ready and declined ticket updates will appear here.', 'staff', 'register');
+    telegramCommandReply_(outbox, updateId, chatId, 'Private staff group registered. New ticket, ready, and declined updates will appear here.', 'staff', 'register');
     return;
   }
 
@@ -1682,7 +1792,7 @@ function handleTelegramUpdate_(update, book, subscriptions, outbox, properties) 
   if (parsed.command === 'help' || (parsed.command === 'start' && !parsed.argument)) {
     var help = chatType === 'private'
       ? 'Use /status to check linked tickets or /stop to turn off updates. Link a ticket from the Telegram button on its receipt.'
-      : 'Staff can use /status P-0001 to check a ticket. Ready and declined updates are posted automatically after this group is registered.';
+      : 'Staff can use /status P-0001 to check a ticket. New ticket, ready, and declined updates are posted automatically after this group is registered.';
     telegramCommandReply_(outbox, updateId, chatId, help, chatType === 'private' ? 'requester' : 'staff', 'help');
   }
 }
@@ -1698,12 +1808,29 @@ function reconcileTelegramEvents_(book, subscriptions, outbox, properties) {
   var staffLinkedAt = Date.parse(String(properties.getProperty('TELEGRAM_STAFF_REGISTERED_AT') || '')) || 0;
   var created = 0;
   map.tickets.forEach(function(ticket) {
+    var ticketCreatedAt = Date.parse(String(ticket.createdAt || '')) || 0;
+    if (staffChat && ticketCreatedAt && ticketCreatedAt >= staffLinkedAt) {
+      var staffNewEventId = sha256Hex_([ticket.id, ticket.createdAt, 'new', 'staff', staffChat].join('|'));
+      // The original event ID remains the first message so deploying this richer
+      // format never re-sends historical ticket alerts to the staff group.
+      if (!existingIds.has(staffNewEventId)) telegramStaffNewTicketMessages_(ticket).forEach(function(message, partIndex) {
+        created += appendTelegramOutbox_(outbox, {
+          eventId: partIndex === 0 ? staffNewEventId : sha256Hex_([ticket.id, ticket.createdAt, 'new', 'staff', staffChat, 'part', partIndex + 1].join('|')),
+          ticketId: ticket.id,
+          ticketNumber: ticket.ticketNumber,
+          audience: 'staff',
+          chatId: staffChat,
+          status: 'new',
+          message: message
+        }, existingIds) ? 1 : 0;
+      });
+    }
     (ticket.history || []).forEach(function(entry) {
       var status = String(entry.status || '');
       if (TELEGRAM_PUSH_STATUSES.indexOf(status) === -1 || !entry.at) return;
       if (status === 'ready' && ticket.status !== 'ready') return;
       var eventAt = Date.parse(entry.at) || 0;
-      var message = telegramPushMessage_(ticket.ticketNumber, status);
+      var message = telegramPushMessage_(ticket.ticketNumber, status, entry.reason || ticket.reason);
       var subscription = enabledByTicket.get(ticket.id);
       if (subscription && eventAt >= telegramDateMs_(subscription[TELEGRAM_SUB.LINKED_AT])) {
         var requesterChat = telegramText_(subscription[TELEGRAM_SUB.CHAT_ID]);

@@ -46,6 +46,7 @@ test('tickets without opt-in notification events send no texts; phone normalizat
  let sends=0;const n=await createNotifications({directory:await dir(t),apiKey:'key',deviceId:'device',fetcher:async()=>{sends++;}});
  await n.reconcile([{...event(),history:[]}]);assert.equal(sends,0);
  const details={machine:'foam',customerName:'Person',department:'Events',purpose:'Design',quantity:1,width:20,length:30,thickness:2,neededBy:'No rush',phone:'(302) 555-0123',smsConsent:'true'};
- assert.equal(validateTicket(details,[]).phone,'+13025550123');assert.throws(()=>validateTicket({...details,phone:'bad'},[]),/mobile number/);
- assert.equal(validateTicket({...details,smsConsent:false,phone:''},[]).smsConsent,false);
+ const files=[{originalName:'design.svg'}];
+ assert.equal(validateTicket(details,files).phone,'+13025550123');assert.throws(()=>validateTicket({...details,phone:'bad'},files),/mobile number/);
+ assert.equal(validateTicket({...details,smsConsent:false,phone:''},files).smsConsent,false);
 });

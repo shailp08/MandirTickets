@@ -48,7 +48,7 @@ const baseTicket = () => ({
   length: '36',
   thickness: '2',
   neededBy: 'This week',
-  files: [],
+  files: [{ name: 'cut.svg', type: 'image/svg+xml', size: 4, data: 'PHN2Zz4=' }],
 });
 
 test('Apps Script backend validates a complete foam ticket', () => {
@@ -118,16 +118,138 @@ test('request-key tracking distinguishes a pending save from a permanent backend
   assert.equal(properties.getProperty(`FAILED_${requestKey}`), null);
 });
 
-test('Telegram commands and push copy expose only ticket status', () => {
+test('Telegram commands and requester push copy stay scoped to ticket updates', () => {
   assert.deepEqual(JSON.parse(JSON.stringify(context.parseTelegramCommand_('/status@DelMandirDesignbot P-0042'))), { command: 'status', argument: 'P-0042' });
   assert.deepEqual(JSON.parse(JSON.stringify(context.parseTelegramCommand_('/stop'))), { command: 'stop', argument: '' });
   assert.equal(context.parseTelegramCommand_('what is my status?'), null);
   assert.equal(context.telegramStatusLabel_('pending-review'), 'Awaiting review');
   assert.equal(context.telegramStatusLabel_('in-progress'), 'In progress');
   assert.equal(context.telegramPushMessage_('P-0042', 'ready'), 'P-0042 is ready for pickup.');
-  assert.equal(context.telegramPushMessage_('F-0011', 'declined'), 'F-0011 was declined.');
+  assert.equal(context.telegramPushMessage_('F-0011', 'declined', 'Please upload a sharper PDF.'), 'F-0011 was declined.\nReason: Please upload a sharper PDF.');
   assert.equal(context.telegramPushMessage_('P-0042', 'queued'), '');
   assert.doesNotMatch(context.telegramPushMessage_('P-0042', 'ready'), /phone|contact|https?:|@/i);
+});
+
+test('Telegram staff group receives the complete formatted submission without requester opt-in', () => {
+  const ticket = {
+    id: 'ticket-1',
+    ticketNumber: 'P-0042',
+    machine: 'printer',
+    status: 'pending-review',
+    createdAt: '2026-10-30T12:00:00.000Z',
+    files: [
+      { originalName: 'main poster.pdf', url: 'https://drive.google.com/file/d/abc123456789/view' },
+      { originalName: 'alternate poster.pdf', url: 'https://drive.google.com/file/d/xyz987654321/view' },
+    ],
+    history: [],
+    customerName: 'Private Requester',
+    department: 'Events',
+    phone: '+13025550123',
+    purpose: 'Private event',
+    quantity: 3,
+    width: 24,
+    length: 36,
+    neededBy: 'Tomorrow',
+    notes: 'Use the approved blue and gold artwork.',
+  };
+  const records = [];
+  const isolated = loadContext();
+  isolated.telegramTicketMap_ = () => ({ tickets: [ticket], byId: new Map([[ticket.id, ticket]]), byNumber: new Map([[ticket.ticketNumber, ticket]]) });
+  isolated.telegramSheetRows_ = sheet => sheet.rows;
+  isolated.sha256Hex_ = value => `event-${value}`;
+  isolated.appendTelegramOutbox_ = (_outbox, record, existingIds) => {
+    if (existingIds.has(record.eventId)) return false;
+    existingIds.add(record.eventId);
+    records.push(record);
+    return true;
+  };
+  const properties = propertiesStore({
+    TELEGRAM_STAFF_CHAT_ID: '-1001234567890',
+    TELEGRAM_STAFF_REGISTERED_AT: '2026-10-30T11:00:00.000Z',
+  });
+
+  assert.equal(isolated.reconcileTelegramEvents_({}, { rows: [] }, { rows: [] }, properties), 1);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].audience, 'staff');
+  assert.equal(records[0].status, 'new');
+  assert.match(records[0].message, /🆕 NEW WORKSHOP TICKET/);
+  assert.match(records[0].message, /P-0042 · Awaiting review/);
+  assert.match(records[0].message, /Name: Private Requester/);
+  assert.match(records[0].message, /Department: Events/);
+  assert.match(records[0].message, /Phone: \+13025550123/);
+  assert.match(records[0].message, /Purpose:\nPrivate event/);
+  assert.match(records[0].message, /Quantity: 3/);
+  assert.match(records[0].message, /Finished size: 24 × 36 in/);
+  assert.match(records[0].message, /Needed by: Tomorrow/);
+  assert.match(records[0].message, /ADDITIONAL NOTES\nUse the approved blue and gold artwork/);
+  assert.match(records[0].message, /1\. main poster\.pdf\n   https:\/\/drive\.google\.com\/file\/d\/abc123456789\/view/);
+  assert.match(records[0].message, /2\. alternate poster\.pdf\n   https:\/\/drive\.google\.com\/file\/d\/xyz987654321\/view/);
+});
+
+test('long Telegram staff submissions are split without dropping submitted details', () => {
+  const purposeEnd = 'PURPOSE-END-9f21';
+  const notesEnd = 'NOTES-END-7c42';
+  const messages = context.telegramStaffNewTicketMessages_({
+    ticketNumber: 'F-0099',
+    machine: 'foam',
+    createdAt: '2026-10-30T12:00:00.000Z',
+    customerName: 'Long Form Requester',
+    department: 'Decorations',
+    phone: '',
+    purpose: `${'Purpose detail '.repeat(160)}${purposeEnd}`,
+    quantity: 2,
+    width: 48,
+    length: 96,
+    thickness: 2,
+    neededBy: 'This week',
+    notes: `${'Finishing note '.repeat(260)}${notesEnd}`,
+    files: [{ originalName: 'large-layout.dxf', url: 'https://drive.google.com/file/d/longfile123456/view' }],
+  });
+  const combined = messages.join('\n');
+  assert.ok(messages.length > 1);
+  messages.forEach(message => assert.ok(message.length <= 4096, `Telegram message is ${message.length} characters`));
+  assert.match(combined, new RegExp(purposeEnd));
+  assert.match(combined, new RegExp(notesEnd));
+  assert.match(combined, /large-layout\.dxf/);
+  assert.match(messages[1], /F-0099 continued · Part 2/);
+});
+
+test('Telegram decline notifications include the saved reason for requester and staff', () => {
+  const declineReason = 'Please upload a higher-resolution PDF.';
+  const ticket = {
+    id: 'ticket-2',
+    ticketNumber: 'P-0043',
+    machine: 'printer',
+    status: 'declined',
+    createdAt: '2026-10-30T08:00:00.000Z',
+    files: [],
+    reason: declineReason,
+    history: [{ status: 'declined', at: '2026-10-30T12:30:00.000Z', reason: declineReason }],
+  };
+  const subscription = Array(10).fill('');
+  subscription[0] = ticket.id;
+  subscription[2] = '7654321';
+  subscription[4] = 'enabled';
+  subscription[5] = '2026-10-30T11:00:00.000Z';
+  const records = [];
+  const isolated = loadContext();
+  isolated.telegramTicketMap_ = () => ({ tickets: [ticket], byId: new Map([[ticket.id, ticket]]), byNumber: new Map([[ticket.ticketNumber, ticket]]) });
+  isolated.telegramSheetRows_ = sheet => sheet.rows;
+  isolated.sha256Hex_ = value => `event-${value}`;
+  isolated.appendTelegramOutbox_ = (_outbox, record, existingIds) => {
+    if (existingIds.has(record.eventId)) return false;
+    existingIds.add(record.eventId);
+    records.push(record);
+    return true;
+  };
+  const properties = propertiesStore({
+    TELEGRAM_STAFF_CHAT_ID: '-1001234567890',
+    TELEGRAM_STAFF_REGISTERED_AT: '2026-10-30T10:00:00.000Z',
+  });
+
+  assert.equal(isolated.reconcileTelegramEvents_({}, { rows: [subscription] }, { rows: [] }, properties), 2);
+  assert.deepEqual(records.map(record => record.audience).sort(), ['requester', 'staff']);
+  records.forEach(record => assert.equal(record.message, `P-0043 was declined.\nReason: ${declineReason}`));
 });
 
 test('Telegram delivery outcomes retry only definite transient failures', () => {
@@ -301,8 +423,10 @@ test('Apps Script review approves print work without staff-only phone, deadline,
   assert.equal(result.edits.neededBy, 'No rush');
 });
 
-test('Apps Script backend requires a safe print file and rejects bot submissions', () => {
-  assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), machine: 'printer', paperType: 'Standard' }), /print-ready file/i);
+test('Apps Script backend requires artwork for every ticket and rejects bot submissions', () => {
+  for (const machine of ['printer', 'foam']) {
+    assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), machine, files: [] }), /at least one artwork file/i);
+  }
   assert.throws(() => context.validatePublicTicket_({ ...baseTicket(), website: 'spam' }), /Unable to accept/i);
   const ticket = context.validatePublicTicket_({
     ...baseTicket(),

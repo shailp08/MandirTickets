@@ -21,6 +21,16 @@ import {
 } from '../src/sheets-api.js';
 
 const file = (name, size = 1024) => ({ name, size });
+const foamArtwork = () => {
+  const contents = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h1v1z"/></svg>');
+  return {
+    name: 'layout.svg',
+    size: contents.length,
+    type: 'image/svg+xml',
+    lastModified: 1770000004000,
+    arrayBuffer: async () => contents.buffer.slice(contents.byteOffset, contents.byteOffset + contents.byteLength),
+  };
+};
 
 const requestDetails = requestKey => ({
   requestKey,
@@ -151,6 +161,7 @@ test('small vector files are encoded losslessly for server-side Drive storage', 
 });
 
 test('Google Sheets client enforces count, extension, per-file, and total limits', () => {
+  assert.throws(() => validateSheetsFiles([], 'foam'), /at least one artwork file/i);
   assert.throws(() => validateSheetsFiles(Array.from({ length: SHEETS_MAX_FILES + 1 }, (_, index) => file(`${index}.pdf`)), 'printer'), /no more than/i);
   assert.throws(() => validateSheetsFiles([file('installer.exe')], 'printer'), /PDF.*PNG.*TIFF/i);
   assert.throws(() => validateSheetsFiles([file('oversize.pdf', SHEETS_MAX_FILE_BYTES + 1)], 'printer'), /200 MB/i);
@@ -570,7 +581,7 @@ test('ticket creation defaults to no rush when the customer form has no needed-b
       notes: 'Use the blue foam.',
     };
     delete details.neededBy;
-    await createSheetsTicket('https://script.example/exec', details, []);
+    await createSheetsTicket('https://script.example/exec', details, [foamArtwork()]);
   });
 
   assert.equal(posted.neededBy, 'No rush');
@@ -592,7 +603,7 @@ test('ticket creation supplies safe defaults when phone and size inputs are abse
     delete details.phone;
     delete details.width;
     delete details.length;
-    await createSheetsTicket('https://script.example/exec', details, []);
+    await createSheetsTicket('https://script.example/exec', details, [foamArtwork()]);
   });
 
   assert.equal(posted.phone, '');

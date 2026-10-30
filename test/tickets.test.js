@@ -10,6 +10,7 @@ import { createStore, validateTicket, publicQueue, machines } from '../lib/store
 import { createSheetsSync, csv } from '../lib/sheets.js';
 
 const input = { machine:'foam', customerName:'Test Person', department:'Events', purpose:'Stage lettering', phone:'', quantity:'2', width:'20', length:'36', thickness:'2', neededBy:'2099-12-31' };
+const foamFiles = [{ originalName:'cut.svg', storedName:'cut.svg', size:100 }];
 async function temp(t) { const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mandir-test-')); t.after(()=>fs.rm(dir,{recursive:true,force:true})); return dir; }
 
 test('uses plain-language public machine names', () => {
@@ -18,7 +19,7 @@ test('uses plain-language public machine names', () => {
 
 test('concurrent requests keep every ticket and assign independent, persistent queue numbers', async t => {
   const dir=await temp(t), store=await createStore(dir);
-  const details=validateTicket(input,[]);
+  const details=validateTicket(input,foamFiles);
   const jobs=await Promise.all(Array.from({length:25},(_,i)=>store.create(details,'request-'+i)));
   assert.equal(new Set(jobs.map(j=>j.ticket.ticketNumber)).size,25);
   assert.equal(store.list().length,25);
@@ -29,15 +30,15 @@ test('concurrent requests keep every ticket and assign independent, persistent q
   const print=validateTicket({...input,machine:'printer',paperType:'Canvas'},[{originalName:'poster.pdf',storedName:'file.pdf',size:100}]);
   assert.equal((await restored.create(print,'print')).ticket.ticketNumber,'P-0001');
 });
-test('validates department, purpose, printer width, quantity and required print files',()=>{
-  for(const patch of [{department:''},{purpose:''},{width:'-1'},{quantity:'1.5'},{thickness:'0'},{neededBy:'Invalid'},{neededBy:'2099-02-29'},{neededBy:false}]) assert.throws(()=>validateTicket({...input,...patch},[]));
+test('validates department, purpose, printer width, quantity and required artwork files',()=>{
+  for(const patch of [{department:''},{purpose:''},{width:'-1'},{quantity:'1.5'},{thickness:'0'},{neededBy:'Invalid'},{neededBy:'2099-02-29'},{neededBy:false}]) assert.throws(()=>validateTicket({...input,...patch},foamFiles));
   assert.throws(()=>validateTicket({...input,machine:'printer',paperType:'Standard',width:'25'},[{originalName:'a.pdf'}]));
-  assert.throws(()=>validateTicket({...input,machine:'printer',paperType:'Standard'},[]));
-  assert.equal(validateTicket(input,[]).machine,'foam');
-  assert.equal(validateTicket({...input,neededBy:'Today'},[]).neededBy,'Today');
-  assert.equal(validateTicket({...input,neededBy:undefined},[]).neededBy,'No rush');
+  for (const machine of ['printer', 'foam']) assert.throws(()=>validateTicket({...input,machine},[]),/at least one artwork file/i);
+  assert.equal(validateTicket(input,foamFiles).machine,'foam');
+  assert.equal(validateTicket({...input,neededBy:'Today'},foamFiles).neededBy,'Today');
+  assert.equal(validateTicket({...input,neededBy:undefined},foamFiles).neededBy,'No rush');
   const withoutOptionalFields={...input}; delete withoutOptionalFields.phone; delete withoutOptionalFields.width; delete withoutOptionalFields.length;
-  assert.deepEqual({phone:validateTicket(withoutOptionalFields,[]).phone,width:validateTicket(withoutOptionalFields,[]).width,length:validateTicket(withoutOptionalFields,[]).length},{phone:'',width:0,length:0});
+  assert.deepEqual({phone:validateTicket(withoutOptionalFields,foamFiles).phone,width:validateTicket(withoutOptionalFields,foamFiles).width,length:validateTicket(withoutOptionalFields,foamFiles).length},{phone:'',width:0,length:0});
 });
 test('validates file formats for each machine',()=>{
   assert.throws(()=>validateTicket({...input,machine:'printer'},[{originalName:'cut.svg'}]),/PDF.*PNG.*TIFF/i);
@@ -48,8 +49,8 @@ test('validates file formats for each machine',()=>{
 });
 test('status changes move queue positions, hide closed jobs, preserve history and private data',async t=>{
   const store=await createStore(await temp(t));
-  const first=(await store.create(validateTicket(input,[]),'one')).ticket;
-  const second=(await store.create(validateTicket(input,[]),'two')).ticket;
+  const first=(await store.create(validateTicket(input,foamFiles),'one')).ticket;
+  const second=(await store.create(validateTicket(input,foamFiles),'two')).ticket;
   await store.review(second.id,{decision:'approve',operator:'Admin'},1);
   await store.update(first.id,'ready');
   const queue=publicQueue(store.list())[1];
@@ -63,7 +64,7 @@ test('status changes move queue positions, hide closed jobs, preserve history an
 });
 test('Sheets failure preserves pending records and retries latest status once',async t=>{
   const store=await createStore(await temp(t));
-  const job=(await store.create(validateTicket(input,[]),'one')).ticket;
+  const job=(await store.create(validateTicket(input,foamFiles),'one')).ticket;
   let failed=true; const writes=[];
   const sheets=createSheetsSync(store,{url:'https://script.google.com/macros/s/test/exec',secret:'test',fetcher:async(_url,opts)=>{
     if(failed)throw new Error('offline');writes.push(JSON.parse(opts.body));return {ok:true,json:async()=>({ok:true})};
@@ -75,7 +76,7 @@ test('Sheets failure preserves pending records and retries latest status once',a
 });
 test('a status update during Sheets delivery stays pending for the next sync',async t=>{
   const store=await createStore(await temp(t));
-  const job=(await store.create(validateTicket(input,[]),'one')).ticket;
+  const job=(await store.create(validateTicket(input,foamFiles),'one')).ticket;
   const sheets=createSheetsSync(store,{url:'https://script.google.com/macros/s/test/exec',secret:'test',fetcher:async()=>{
     await store.update(job.id,'in-progress');return {ok:true,json:async()=>({ok:true})};
   }});
@@ -83,7 +84,7 @@ test('a status update during Sheets delivery stays pending for the next sync',as
   await sheets.sync();assert.equal(sheets.state().pending,0);
 });
 test('spreadsheet exports escape formulas, quotes, commas and newlines',()=>{
-  const ticket={...validateTicket({...input,customerName:'=SUM(1,2)',purpose:'Line one\n"line two"'},[]),id:'id',ticketNumber:'F-0001',status:'queued',createdAt:'now',revision:1};
+  const ticket={...validateTicket({...input,customerName:'=SUM(1,2)',purpose:'Line one\n"line two"'},foamFiles),id:'id',ticketNumber:'F-0001',status:'queued',createdAt:'now',revision:1};
   const output=csv([ticket]);assert.ok(output.includes('"\'=SUM(1,2)"'));assert.ok(output.includes('"Line one\n""line two"""'));
 });
 test('Sheets can sync new tickets after starting with an empty queue', async t => {
@@ -93,13 +94,13 @@ test('Sheets can sync new tickets after starting with an empty queue', async t =
     writes++; return {ok:true,json:async()=>({ok:true})};
   }});
   await sheets.sync();
-  await store.create(validateTicket(input,[]),'after-empty');
+  await store.create(validateTicket(input,foamFiles),'after-empty');
   await sheets.sync();
   assert.equal(writes,1); assert.equal(sheets.state().pending,0);
 });
 test('reopening clears the old ready timestamp and survives a restart', async t => {
   const dir = await temp(t), store = await createStore(dir);
-  const {ticket} = await store.create(validateTicket(input,[]),'reopen');
+  const {ticket} = await store.create(validateTicket(input,foamFiles),'reopen');
   assert.ok((await store.update(ticket.id,'ready')).completedAt);
   const reopened = await store.update(ticket.id,'queued');
   assert.equal(reopened.completedAt,null);

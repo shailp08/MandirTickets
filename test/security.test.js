@@ -9,6 +9,7 @@ import { validateTicket, createStore } from '../lib/store.js';
 import { acquireProcessLock } from '../lib/process-lock.js';
 
 const details = { machine:'foam', customerName:'QA', department:'Testing', purpose:'Test fixture', quantity:'1', width:'20', length:'24', thickness:'2', neededBy:'No rush' };
+const foamFiles = [{ originalName:'design.svg', storedName:'design.svg', size:100 }];
 async function directory(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(),'mandir-security-'));
   t.after(() => fs.rm(dir,{recursive:true,force:true})); return dir;
@@ -89,12 +90,12 @@ test('malware screening fails closed when required, unavailable, or rejected', a
 });
 test('ticket numeric validation rejects coercion, invalid units and unsafe dimensions', () => {
   for (const value of [true,false,null,[],['2'],{},'0x10','1e2','Infinity','NaN','-1','0','0.009',Infinity,NaN]) {
-    assert.throws(()=>validateTicket({...details,width:value},[]), undefined, String(value));
+    assert.throws(()=>validateTicket({...details,width:value},foamFiles), undefined, String(value));
   }
   for (const body of [null,undefined,[],{}, {...details,machine:['foam']}, {...details,unit:'mm'}, {...details,quantity:'1.5'}, {...details,quantity:'10001'}]) assert.throws(()=>validateTicket(body,[]));
-  assert.equal(validateTicket({...details,width:'.01'},[]).width,0.01);
-  assert.equal(validateTicket({...details,width:' '},[]).width,0);
-  assert.equal(validateTicket({...details,unit:'in'},[]).unit,'in');
+  assert.equal(validateTicket({...details,width:'.01'},foamFiles).width,0.01);
+  assert.equal(validateTicket({...details,width:' '},foamFiles).width,0);
+  assert.equal(validateTicket({...details,unit:'in'},foamFiles).unit,'in');
   const print = {...details,machine:'printer',paperType:'Glossy',width:'24'};
   const printFiles = [{ originalName: 'poster.pdf' }];
   assert.equal(validateTicket(print,printFiles).width,24);
@@ -102,7 +103,7 @@ test('ticket numeric validation rejects coercion, invalid units and unsafe dimen
 });
 test('two staff updates using the same revision cannot overwrite each other', async t => {
   const store = await createStore(await directory(t));
-  const {ticket} = await store.create(validateTicket(details,[]),'request-1');
+  const {ticket} = await store.create(validateTicket(details,foamFiles),'request-1');
   const results = await Promise.allSettled([store.update(ticket.id,'ready',1),store.update(ticket.id,'cancelled',1)]);
   assert.equal(results.filter(r=>r.status==='fulfilled').length,1);
   assert.equal(results.find(r=>r.status==='rejected').reason.status,409);
@@ -120,9 +121,9 @@ test('idempotency checks design bytes and details, while ignoring random storage
 });
 test('legacy numbered tickets cannot have their sequence accidentally reused', async t => {
   const dir = await directory(t);
-  await fs.writeFile(path.join(dir,'tickets.json'),JSON.stringify([{...validateTicket(details,[]),id:'legacy',ticketNumber:'F-0042',status:'queued'}]));
+  await fs.writeFile(path.join(dir,'tickets.json'),JSON.stringify([{...validateTicket(details,foamFiles),id:'legacy',ticketNumber:'F-0042',status:'queued'}]));
   const store = await createStore(dir);
-  assert.equal((await store.create(validateTicket(details,[]),'new')).ticket.ticketNumber,'F-0043');
+  assert.equal((await store.create(validateTicket(details,foamFiles),'new')).ticket.ticketNumber,'F-0043');
 });
 test('data directory lock rejects a second server and can be released cleanly', async t => {
   const dir = await directory(t), release = acquireProcessLock(dir);

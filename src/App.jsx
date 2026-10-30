@@ -6,6 +6,7 @@ import {
   FileArrowUp,
   Printer,
   Scissors,
+  TelegramLogo,
   UploadSimple,
   X,
 } from '@phosphor-icons/react';
@@ -47,6 +48,32 @@ const createRequestKey = () => Array.from(
   crypto.getRandomValues(new Uint8Array(16)),
   value => value.toString(16).padStart(2, '0'),
 ).join('');
+
+export function TicketReceipt({ ticket, onStartAnother, telegramRequested = false }) {
+  const telegramLink = typeof ticket.telegramLink === 'string' && TELEGRAM_LINK_PATTERN.test(ticket.telegramLink)
+    ? ticket.telegramLink
+    : '';
+  return (
+    <section className="receipt-card" id="ticket-receipt" tabIndex="-1" aria-labelledby="receipt-title">
+      <span className="receipt-check"><Check size={25} weight="bold" aria-hidden="true" /></span>
+      <p className="eyebrow">Ticket submitted</p>
+      <h2 id="receipt-title">Your request is awaiting review.</h2>
+      <p className="receipt-label">Ticket number</p>
+      <strong className="receipt-number">{ticket.ticketNumber}</strong>
+      <p>{machineName(ticket)} · {ticket.department}{ticket.position ? ` · ${ticket.position - 1} ${ticket.position === 2 ? 'job' : 'jobs'} ahead of you` : ''}</p>
+      <p className="receipt-help">A karyakar will check your files and request details before your request joins the staff queue. Save the ticket number. Follow the live queue, or opt in to Telegram for ready and declined updates and on-demand status checks.</p>
+      {telegramLink && <aside className={`telegram-opt-in${telegramRequested ? ' telegram-opt-in-requested' : ''}`} aria-label="Telegram ticket notifications">
+        <span className="telegram-opt-in-icon"><TelegramLogo size={28} weight="fill" aria-hidden="true" /></span>
+        <span className="telegram-opt-in-copy"><strong>{telegramRequested ? 'Finish linking Telegram' : 'Get notified when your ticket is ready'}</strong><span>Open the private ticket link and press Start in Telegram. You will receive ready, declined, and on-demand status updates.</span></span>
+        <a className="button telegram-button" href={telegramLink} target="_blank" rel="noreferrer">{telegramRequested ? 'Continue to Telegram' : 'Get Telegram updates'} <ArrowRight weight="bold" aria-hidden="true" /></a>
+      </aside>}
+      <div className="receipt-actions">
+        <button className="button button-secondary" type="button" onClick={() => window.print()}><Printer aria-hidden="true" /> Print receipt</button>
+        <button className="button button-primary" type="button" onClick={onStartAnother}>Open another ticket <ArrowRight aria-hidden="true" /></button>
+      </div>
+    </section>
+  );
+}
 
 function Header() {
   return (
@@ -95,6 +122,7 @@ export function TicketForm({ machine, onChangeMachine, onTicket }) {
   const [notice, setNotice] = useState({ text: '', error: false });
   const [canRetry, setCanRetry] = useState(false);
   const [ticket, setTicket] = useState(null);
+  const [telegramRequested, setTelegramRequested] = useState(false);
 
   const showNotice = (text, error = true) => {
     setNotice({ text, error });
@@ -159,8 +187,8 @@ export function TicketForm({ machine, onChangeMachine, onTicket }) {
   const submit = async event => {
     event.preventDefault();
     if (submitting || !formRef.current.reportValidity()) return;
-    if (machine === 'printer' && files.length === 0) {
-      showNotice('Add at least one PDF, JPG, PNG, or TIFF file for a print ticket.');
+    if (files.length === 0) {
+      showNotice('Add at least one artwork file before submitting a ticket.');
       return;
     }
     if (staticPreview) {
@@ -207,6 +235,7 @@ export function TicketForm({ machine, onChangeMachine, onTicket }) {
     startedAt.current = Date.now();
     setFiles([]);
     setTicket(null);
+    setTelegramRequested(false);
     setNotice({ text: '', error: false });
     setCanRetry(false);
     onChangeMachine(null);
@@ -214,25 +243,7 @@ export function TicketForm({ machine, onChangeMachine, onTicket }) {
   };
 
   if (ticket) {
-    const telegramLink = typeof ticket.telegramLink === 'string' && TELEGRAM_LINK_PATTERN.test(ticket.telegramLink)
-      ? ticket.telegramLink
-      : '';
-    return (
-      <section className="receipt-card" id="ticket-receipt" tabIndex="-1" aria-labelledby="receipt-title">
-        <span className="receipt-check"><Check size={25} weight="bold" aria-hidden="true" /></span>
-        <p className="eyebrow">Ticket submitted</p>
-        <h2 id="receipt-title">Your request is awaiting review.</h2>
-        <p className="receipt-label">Ticket number</p>
-        <strong className="receipt-number">{ticket.ticketNumber}</strong>
-        <p>{machineName(ticket)} · {ticket.department}{ticket.position ? ` · ${ticket.position - 1} ${ticket.position === 2 ? 'job' : 'jobs'} ahead of you` : ''}</p>
-        <p className="receipt-help">A karyakar will check your files and request details before your request joins the staff queue. Save the ticket number. Follow the live queue, or opt in to Telegram for ready and declined updates and on-demand status checks.</p>
-        <div className="receipt-actions">
-          {telegramLink && <a className="button button-primary" href={telegramLink} target="_blank" rel="noreferrer">Get Telegram updates <ArrowRight weight="bold" aria-hidden="true" /></a>}
-          <button className="button button-secondary" type="button" onClick={() => window.print()}><Printer aria-hidden="true" /> Print receipt</button>
-          <button className="button button-primary" type="button" onClick={startAnother}>Open another ticket <ArrowRight aria-hidden="true" /></button>
-        </div>
-      </section>
-    );
+    return <TicketReceipt ticket={ticket} onStartAnother={startAnother} telegramRequested={telegramRequested} />;
   }
 
   return (
@@ -264,14 +275,14 @@ export function TicketForm({ machine, onChangeMachine, onTicket }) {
             <label>Width in inches <span>Optional</span><input name="width" type="number" min="0.01" max={machine === 'printer' ? '24' : '10000'} step="any" placeholder={machine === 'printer' ? '24' : '20'} /></label>
             <label>Length in inches <span>Optional</span><input name="length" type="number" min="0.01" max="100000" step="any" placeholder="36" /></label>
           </div>
-          <p className="field-help">{machine === 'printer' ? 'If known, add the finished size. Maximum print width: 24 inches. Staff will review the artwork and choose the paper.' : 'Add the finished size if known, plus a cut layout or reference if you have one.'}</p>
+          <p className="field-help">{machine === 'printer' ? 'If known, add the finished size. Maximum print width: 24 inches. Staff will review the artwork and choose the paper.' : 'Add the finished size if known. Attach an SVG or DXF cut layout for staff to review.'}</p>
 
-          <label className="upload-label">Artwork files <span>{machine === 'printer' ? 'Required' : 'Optional'}</span></label>
+          <label className="upload-label">Artwork files <span>Required</span></label>
           <div className="dropzone" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
             <UploadSimple size={30} weight="duotone" aria-hidden="true" />
             <strong>Choose files or drop them here</strong>
             <small>{machine === 'printer' ? 'PDF, JPG, PNG, or TIFF' : 'SVG or DXF (10 MB per vector file)'} · up to 200 MB total</small>
-            <input type="file" name="files" accept={machine === 'printer' ? '.pdf,.jpg,.jpeg,.png,.tif,.tiff' : '.svg,.dxf'} multiple onChange={event => { addFiles(event.target.files); event.target.value = ''; }} aria-label="Upload artwork files" />
+            <input type="file" name="files" accept={machine === 'printer' ? '.pdf,.jpg,.jpeg,.png,.tif,.tiff' : '.svg,.dxf'} multiple required={files.length === 0} onChange={event => { addFiles(event.target.files); event.target.value = ''; }} aria-label="Upload artwork files" />
           </div>
 
           {files.length > 0 && (
@@ -288,9 +299,19 @@ export function TicketForm({ machine, onChangeMachine, onTicket }) {
           </details>
         </fieldset>
 
+        <fieldset className="form-card telegram-form-card">
+          <legend>Ticket updates</legend>
+          <label className={`telegram-form-choice${telegramRequested ? ' selected' : ''}`}>
+            <input type="checkbox" checked={telegramRequested} onChange={event => setTelegramRequested(event.target.checked)} />
+            <span className="telegram-form-icon"><TelegramLogo size={27} weight="fill" aria-hidden="true" /></span>
+            <span className="telegram-form-copy"><strong>Link Telegram to this ticket</strong><span>Optional. After the ticket is saved, continue through one secure button here—before the live queue.</span></span>
+            <span className="telegram-form-state">{telegramRequested ? 'Selected' : 'Optional'}</span>
+          </label>
+        </fieldset>
+
         <div className="submit-area">
           <p>A karyakar reviews each request before it enters the queue. Timing depends on staff and material availability.</p>
-          <button className="button button-primary submit-button" type="submit" disabled={submitting}>{submitting ? 'Submitting ticket' : canRetry ? 'Try again' : 'Submit ticket'} <ArrowRight weight="bold" aria-hidden="true" /></button>
+          <button className="button button-primary submit-button" type="submit" disabled={submitting}>{submitting ? 'Submitting ticket' : canRetry ? 'Try again' : telegramRequested ? 'Submit and link Telegram' : 'Submit ticket'} <ArrowRight weight="bold" aria-hidden="true" /></button>
         </div>
         {submitting && <progress max="100" value={progress} aria-label={`Upload progress: ${progress}%`} />}
         {notice.text && <p ref={noticeRef} id="ticket-form-notice" className={notice.error ? 'notice error' : 'notice'} role={notice.error ? 'alert' : 'status'} tabIndex="-1">{notice.text}</p>}

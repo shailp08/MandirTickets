@@ -8,12 +8,13 @@ import { createStore, validateTicket, publicQueue } from '../lib/store.js';
 import { createGoogleWorkshop } from '../lib/google-workshop.js';
 import { usageCsv } from '../lib/workflow.js';
 const details = { machine:'foam', customerName:'Private Name', department:'Events', purpose:'Private design', quantity:'1', width:'24', length:'36', thickness:'2', neededBy:'Today' };
+const foamFiles = [{ originalName:'design.svg', storedName:'design.svg', size:100 }];
 const input = { requestKey:'usage-request-0001', used:6, waste:1, operator:'Tester', note:'Cut and offcut waste' };
 async function setup(t) { const dir = await fs.mkdtemp(path.join(os.tmpdir(),'workshop-')); t.after(() => fs.rm(dir,{recursive:true,force:true})); return {dir, store:await createStore(dir)}; }
 test('review gates production; approved jobs can start out of order; material history stays intact', async t => {
   const {dir,store}=await setup(t);
-  const a=(await store.create(validateTicket(details,[]),'a')).ticket;
-  const b=(await store.create(validateTicket(details,[]),'b')).ticket;
+  const a=(await store.create(validateTicket(details,foamFiles),'a')).ticket;
+  const b=(await store.create(validateTicket(details,foamFiles),'b')).ticket;
   const p=(await store.create(validateTicket({...details,machine:'printer',paperType:'Glossy'},[{originalName:'a.pdf',storedName:'a.pdf'}]),'p')).ticket;
   assert.equal(p.paperType,''); assert.equal(publicQueue(store.list())[1].waiting,0);
   assert.equal(publicQueue(store.list())[1].inReview,2);
@@ -36,13 +37,13 @@ test('review gates production; approved jobs can start out of order; material hi
 });
 test('review accepts an exact calendar deadline while preserving legacy timing values', async t => {
   const {store}=await setup(t);
-  const {ticket}=await store.create(validateTicket({...details,neededBy:'2099-12-31'},[]),'calendar');
+  const {ticket}=await store.create(validateTicket({...details,neededBy:'2099-12-31'},foamFiles),'calendar');
   const reviewed=await store.review(ticket.id,{decision:'save',operator:'Admin',fields:{neededBy:'2099-11-30'}},1);
   assert.equal(reviewed.neededBy,'2099-11-30');
   await assert.rejects(store.review(reviewed.id,{decision:'save',operator:'Admin',fields:{neededBy:'2099-02-29'}},2),/valid requested deadline/i);
 });
 test('simultaneous usage saves cannot double-count or overwrite another volunteer', async t => {
-  const {store}=await setup(t); const {ticket}=await store.create(validateTicket(details,[]),'a');
+  const {store}=await setup(t); const {ticket}=await store.create(validateTicket(details,foamFiles),'a');
   await store.review(ticket.id,{decision:'approve',operator:'Admin'},1);
   await store.update(ticket.id,'in-progress',2,true);
   const results=await Promise.allSettled([store.recordUsage(ticket.id,input,3),store.recordUsage(ticket.id,{...input,requestKey:'usage-request-0002'},3)]);
@@ -127,10 +128,10 @@ test('Google review edits details with revision protection, decline reasons and 
   assert.ok(!JSON.stringify(ctx.publicWorkshopQueue_()).includes('Private phone'));
 });
 test('review cannot replace local file paths, mutate identifiers, or reuse numbers after moving machines',async t=>{
-  const {store}=await setup(t); const a=(await store.create(validateTicket(details,[]),'a')).ticket;
+  const {store}=await setup(t); const a=(await store.create(validateTicket(details,foamFiles),'a')).ticket;
   await assert.rejects(store.review(a.id,{decision:'approve',operator:'Admin',fields:{files:[{storedName:'../../private',originalName:'design.pdf'}]}},1),/belong/);
   await store.review(a.id,{decision:'save',operator:'Admin',fields:{machine:'printer',id:'changed',paperType:'Glossy',files:[{originalName:'new.pdf',url:'https://drive.google.com/file/d/abc123/view'}]}},1);
-  const second=(await store.create(validateTicket(details,[]),'b')).ticket;
+  const second=(await store.create(validateTicket(details,foamFiles),'b')).ticket;
   assert.equal(second.ticketNumber,'F-0002'); assert.equal(store.list()[0].id,a.id);
 });
 
